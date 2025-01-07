@@ -140,6 +140,7 @@ trinity <- c("CASP8",
 panCancer <- readRDS(here::here("results", "panCancer_biomarkers.rds"))
 .list <- list(UCSC = ucsc, UCSC_isoforms = ucsc_isoforms,
               Ensembl = ensembl, Trinity = trinity, panCancer = panCancer)
+write.csv(data.frame(biomarkers = unique(unlist(.list))), here::here("results", "latephase_biomarkers.csv"))
 ```
 
 ## number of gene-transcripts in late phase biomarker panels
