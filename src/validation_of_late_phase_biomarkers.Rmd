@@ -1,0 +1,306 @@
+---
+title: "validation of late phase biomarkers"
+author: "Amrit Singh"
+date: "Jan 6, 2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse);
+library(nlme)
+library(ggrepel)
+library(cowplot)
+library(limma)
+library(mixOmics)
+
+source(here::here("src", "utils.R"))
+```
+
+## import data
+
+```{r}
+latephase_exacer_biomarkers <- readRDS(here::here("results", "latephase_exacer_biomarkers.rds"))
+load(here::here("data", "preprocessedData", "geodatasets.RDATA"))
+
+table(phenoDataList$GSE19301$phenotype)
+
+all(colnames(esetList$GSE19301) == rownames(phenoDataList$GSE19301))
+geoPanelGenes <- as.data.frame(t(esetList$GSE19301))
+geoPanelGenes <- geoPanelGenes[, intersect(colnames(geoPanelGenes), latephase_exacer_biomarkers)]
+
+geoPanelGenes <-add_column(geoPanelGenes, donor = phenoDataList$GSE19301$donor, .before = 1)
+geoPanelGenes <-add_column(geoPanelGenes, phenotype = phenoDataList$GSE19301$phenotype, .before = 1)
+```
+## Exacerbation dataset
+
+```{r}
+## quiet vs. exacerbations
+geoEset_QuietvsExacer <- filter(ungroup(geoPanelGenes), phenotype != "FOLLOW UP")
+group <- factor(geoEset_QuietvsExacer$phenotype, levels = c("QUIET", "EXACERBATION"))
+subject <- factor(geoEset_QuietvsExacer$donor)
+genes_pval_QuietvsExacer <- list()
+for(i in 3 : ncol(geoPanelGenes)){
+  gene <- as.vector(as.matrix(geoEset_QuietvsExacer[, i]))
+  df <- data.frame(gene, group, subject)
+  groupedDat <- groupedData(gene ~ group | subject, data = df)
+  fit <- lme(gene ~ group, data = groupedDat, random = ~ 1 | subject, na.action = na.omit)
+  genes_pval_QuietvsExacer[[i-2]] <- coef(summary(fit))[2,]
+}
+names(genes_pval_QuietvsExacer) <- colnames(geoPanelGenes)[-c(1:2)]
+genes_adjpval_QuietvsExacer <- as.data.frame(do.call(rbind, genes_pval_QuietvsExacer))
+genes_adjpval_QuietvsExacer$adj.P.Val <- p.adjust(genes_adjpval_QuietvsExacer$`p-value`, "BH")
+genes_adjpval_QuietvsExacer <- genes_adjpval_QuietvsExacer[order(genes_adjpval_QuietvsExacer$`p-value`), ]
+genes_adjpval_QuietvsExacer$feature <- rownames(genes_adjpval_QuietvsExacer)
+genes_adjpval_QuietvsExacer$GSE <- "GSE19301"
+genes_adjpval_QuietvsExacer$contrast <- "Exacer - Quiet"
+genes_adjpval_QuietvsExacer$tissue <- "blood-PBMCs"
+genes_adjpval_QuietvsExacer$fc <- ifelse(genes_adjpval_QuietvsExacer$Value > 0, "UP", "DOWN")
+genes_genSym_QuietvsExacer <- rownames(genes_adjpval_QuietvsExacer)[genes_adjpval_QuietvsExacer$adj.P.Val < 0.1]
+length(genes_genSym_QuietvsExacer)
+
+genes_quiet.exacerUp <- rownames(genes_adjpval_QuietvsExacer)[genes_adjpval_QuietvsExacer$Value > 0 & genes_adjpval_QuietvsExacer$adj.P.Val < 0.1]
+genes_quiet.exacerDown <- rownames(genes_adjpval_QuietvsExacer)[genes_adjpval_QuietvsExacer$Value < 0 & genes_adjpval_QuietvsExacer$adj.P.Val < 0.1]
+length(genes_quiet.exacerUp); length(genes_quiet.exacerDown);
+
+
+# exacerbation vs. followup
+geoEset_ExacerVsFollowUp <- filter(ungroup(geoPanelGenes), phenotype != "QUIET")
+group <- factor(geoEset_ExacerVsFollowUp$phenotype, levels = c("EXACERBATION", "FOLLOW UP"))
+subject <- factor(geoEset_ExacerVsFollowUp$donor)
+genes_pval_ExacerVsFollowUp <- list()
+for(i in 3 : ncol(geoPanelGenes)){
+  gene <- as.vector(as.matrix(geoEset_ExacerVsFollowUp[, i]))
+  df <- data.frame(gene, group, subject)
+  groupedDat <- groupedData(gene ~ group | subject, data = df)
+  fit <- lme(gene ~ group, data = groupedDat, random = ~ 1 | subject, na.action = na.omit)
+  genes_pval_ExacerVsFollowUp[[i-2]] <- coef(summary(fit))[2,]
+}
+names(genes_pval_ExacerVsFollowUp) <- colnames(geoPanelGenes)[-c(1:2)]
+genes_adjpval_ExacerVsFollowUp <- as.data.frame(do.call(rbind, genes_pval_ExacerVsFollowUp))
+genes_adjpval_ExacerVsFollowUp$adj.P.Val <- p.adjust(genes_adjpval_ExacerVsFollowUp$`p-value`, "BH")
+genes_adjpval_ExacerVsFollowUp <- genes_adjpval_ExacerVsFollowUp[order(genes_adjpval_ExacerVsFollowUp$`p-value`), ]
+genes_genSym_ExacerVsFollowUp <- rownames(genes_adjpval_ExacerVsFollowUp)[genes_adjpval_ExacerVsFollowUp$adj.P.Val < 0.1]
+length(genes_genSym_ExacerVsFollowUp)
+genes_adjpval_ExacerVsFollowUp$feature <- rownames(genes_adjpval_ExacerVsFollowUp)
+genes_adjpval_ExacerVsFollowUp$GSE <- "GSE19301"
+genes_adjpval_ExacerVsFollowUp$contrast <- "Followup - Exacer"
+genes_adjpval_ExacerVsFollowUp$tissue <- "blood-PBMCs"
+genes_adjpval_ExacerVsFollowUp$fc <- ifelse(genes_adjpval_QuietvsExacer$Value > 0, "UP", "DOWN")
+genes_exacer.followUp <- rownames(genes_adjpval_ExacerVsFollowUp)[genes_adjpval_ExacerVsFollowUp$Value > 0 & genes_adjpval_ExacerVsFollowUp$adj.P.Val < 0.1]
+genes_exacer.followDown <- rownames(genes_adjpval_ExacerVsFollowUp)[genes_adjpval_ExacerVsFollowUp$Value < 0 & genes_adjpval_ExacerVsFollowUp$adj.P.Val < 0.1]
+length(genes_exacer.followUp); length(genes_exacer.followDown);
+
+```
+
+## plot significant genes
+
+```{r, fig.width=14}
+int <- intersect(genes_quiet.exacerUp, genes_exacer.followDown)
+length(int)
+#write.csv(int, paste0(WhereAmI, "results/enrichr/asthmaExacerbationGenes/asthmaExacerbationGenes.csv"))
+
+scaleFUN <- function(x) sprintf("%.0f", x)
+## Quiet vs. Excerbation
+genes_adjpval_QuietvsExacer$logPval <- -log10(genes_adjpval_QuietvsExacer$`p-value`)
+genes_adjpval_QuietvsExacer$Gene <- rownames(genes_adjpval_QuietvsExacer)
+genes_adjpval_QuietvsExacer$Sig <- ifelse(genes_adjpval_QuietvsExacer$adj.P.Val < 0.1, "FDR<10%", "NotSignificant")
+## volcano plot
+thres <- genes_adjpval_QuietvsExacer$logPval[genes_adjpval_QuietvsExacer$adj.P.Val < 0.1]
+gg1 <- ggplot(genes_adjpval_QuietvsExacer, aes(x = Value, y = logPval, color = Sig)) + geom_point(size = 2) +
+  geom_vline(aes(xintercept = 0), lty = 2, color = "gray") +
+  geom_text_repel(data=filter(genes_adjpval_QuietvsExacer, logPval >= thres[length(thres)]), aes(label=Gene), size=2, max.overlaps = 20) + 
+  customTheme(sizeStripFont = 8, xAngle = 0, hjust = 0.5, vjust = 0.5, xSize = 8, ySize = 8, xAxisSize = 8, yAxisSize = 8) +
+  scale_x_continuous(expression("log"[2]~"fold-change (Exacer - Quiet)")) +
+  scale_y_continuous(expression("-log"[10]~"P-value"), labels=scaleFUN) +
+  scale_color_manual(values=c("blue", "gray")) +
+  ggtitle("PBMCs - GSE19301") + theme(legend.position = "none")
+
+
+## Exacerbation vs. Follow-up
+genes_adjpval_ExacerVsFollowUp$logPval <- -log10(genes_adjpval_ExacerVsFollowUp$`p-value`)
+genes_adjpval_ExacerVsFollowUp$Gene <- rownames(genes_adjpval_ExacerVsFollowUp)
+genes_adjpval_ExacerVsFollowUp$Sig <- ifelse(genes_adjpval_ExacerVsFollowUp$adj.P.Val < 0.1, "FDR<10%", "NotSignificant")
+## volcano plot
+thres2 <- genes_adjpval_ExacerVsFollowUp$logPval[genes_adjpval_ExacerVsFollowUp$adj.P.Val < 0.1]
+gg2 <- ggplot(genes_adjpval_ExacerVsFollowUp, aes(x = Value, y = logPval, color = Sig)) + geom_point(size = 2) +
+  geom_vline(aes(xintercept = 0), lty = 2, color = "gray") +
+  geom_text_repel(data=filter(genes_adjpval_ExacerVsFollowUp, logPval >= thres2[length(thres2)]), aes(label=Gene), size=2, max.overlaps = 20) + 
+  customTheme(sizeStripFont = 8, xAngle = 0, hjust = 0.5, vjust = 0.5, xSize = 8, ySize = 8, xAxisSize = 8, yAxisSize = 8) +
+  scale_x_continuous(expression("log"[2]~"fold-change (Followup - Exacer)")) +
+  scale_y_continuous(expression("-log"[10]~"P-value"), labels=scaleFUN) +
+    scale_color_manual(values=c("blue", "gray")) +
+  ggtitle("PBMCs - GSE19301") + 
+  theme(legend.position = "none") 
+
+#pdf(paste0(WhereAmI, "results/Figures/Figure5.pdf"), height = 5, width = 11)
+p1 <- plot_grid(gg1, gg2, ncol=1)
+#dev.off()
+
+```
+
+## airway, blood, sputum and balf datasets
+
+```{r}
+test_biomarkers = function(eset,pheno,biomarkers){
+  group <- pheno$phenotype
+  sex <- pheno$sex
+  design <- model.matrix(~group+sex+0)
+  colnames(design) <- c("control", "mod", "sev", "sex")
+  lmfit <- lmFit(eset[intersect(rownames(eset), biomarkers), ], design)
+  cont <- makeContrasts(sev-mod, mod-control, levels = design)
+  lmfit.cont <- contrasts.fit(lmfit, cont)
+  lmfit.cont.ebayes <- eBayes(lmfit.cont)
+  top <- lapply(colnames(cont), function(contrast){
+      topTable(lmfit.cont.ebayes, coef = contrast,
+                    adjust.method = "BH", n= nrow(lmfit.cont.ebayes)) %>% 
+        as.data.frame() %>% 
+        mutate(contrast = contrast) %>% 
+        mutate(feature = rownames(.)) %>% 
+        mutate(n = 1:n())
+    }) %>% 
+      do.call(rbind, .)
+}
+
+select_gse <- c("GSE69683","GSE74986","GSE147878","GSE147880","GSE76262")
+result <- mapply(function(x, y, z, tis){
+  result = test_biomarkers(eset = x,
+                  pheno = y,
+                  biomarkers = latephase_exacer_biomarkers)
+  result$GSE <- z
+  result$tissue <- tis
+  result
+}, x = esetList[select_gse], 
+y = phenoDataList[select_gse], 
+z = select_gse,
+tis = sapply(phenoDataList[select_gse], function(i){unique(i$sampletype)}),
+SIMPLIFY = FALSE) %>% 
+  do.call(rbind, .) %>% 
+  mutate(fc = ifelse(logFC>0, "UP", "DOWN"))
+
+```
+
+## volcano plot
+
+```{r}
+result$Value <- result$logFC
+df <- rbind(result[, c("GSE", "tissue", "contrast", "Value", "feature", "adj.P.Val")],
+      rbind(genes_adjpval_QuietvsExacer, genes_adjpval_ExacerVsFollowUp)[, c("GSE", "tissue", "contrast", "Value", "feature", "adj.P.Val")])
+
+df2 <- df %>% 
+  filter(!(contrast %in% c("Exacer - Quiet", "Followup - Exacer"))) %>% 
+  mutate(sig = -log10(adj.P.Val)) %>% 
+  mutate(Significance = ifelse(adj.P.Val < 0.1, "FDR<10%", "NotSignificant")) %>% 
+  mutate(tissue_gse = paste(tissue, GSE, sep="_"))
+p2 <- df2 %>% 
+  ggplot(aes(x = Value, y = sig, col = Significance)) +
+  geom_point() +
+  ggh4x::facet_grid2(contrast~tissue_gse, scales = "free") + 
+  scale_color_manual(values=c("blue", "gray")) +
+  ggrepel::geom_text_repel(data= subset(df2, adj.P.Val < 0.1), aes(label=feature), size=2, max.overlaps = 20) +
+  geom_vline(xintercept = 0, linetype="dashed") + 
+  theme(legend.position = "top") +
+  customTheme(sizeStripFont = 8, xAngle = 0, hjust = 0.5, vjust = 0.5, xSize = 8, ySize = 8, xAxisSize = 8, yAxisSize = 8) +
+  xlab(expression("log"[2]~"fold-change")) +
+  ylab(expression("-log"[10]~"P-value"))
+
+```
+
+## Figure 3
+
+```{r}
+fig3ab <- plot_grid(p1, p2, labels = c("A", "B"), rel_widths = c(1, 3))
+
+ggsave(here::here("results", "validation_of_late_phase_biomarkers_volcanoplots.png"),
+       fig3ab, height = 5, width = 11)
+```
+
+# splsda analysis 
+
+```{r}
+X <- t(esetList$GSE19301[intersect(rownames(esetList$GSE19301), latephase_exacer_biomarkers), phenoDataList$GSE19301$phenotype != "FOLLOW UP"])
+Y <- phenoDataList$GSE19301$phenotype
+Y <- factor(Y[Y != "FOLLOW UP"], levels = c("QUIET", "EXACERBATION"))
+design <- data.frame(sample = phenoDataList$GSE19301$donor[phenoDataList$GSE19301$phenotype != "FOLLOW UP"])
+Xw <- withinVariation(X = X, design = design)
+result <- mixOmics::plsda(X = Xw, Y = Y, ncomp=2)
+cv <- perf(result, validation = "Mfold", folds = 5, nrepeat = 5, auc = TRUE)
+df <- data.frame(value = cv$auc$comp2, 
+             stat = names(cv$auc$comp2),
+             gse = "GSE19301",
+             sampletype = "blood",
+             comp = "Exacer vs. Quiet")
+
+
+res <- mapply(function(x, y, gse){
+  group <- y$phenotype
+  ## healthyControls vs. moderateAsthma
+  X <- t(x[intersect(rownames(x), latephase_exacer_biomarkers), group != "severeAsthma"])
+  Y <- droplevels(group[group != "severeAsthma"])
+  result <- mixOmics::plsda(X = X, Y = Y, ncomp=2)
+  cv <- perf(result, validation = "Mfold", folds = 5, nrepeat = 5, auc = TRUE)
+  df1 <- data.frame(value = cv$auc$comp2, 
+             stat = names(cv$auc$comp2),
+             gse = gse,
+             sampletype = unique(y$sampletype),
+             comp = "healthyControls_vs_moderateAsthma")
+
+  feat1 <- data.frame(rank = 1:ncol(X))
+  rownames(feat1) <- selectVar(result, comp=1)$name
+  
+    ## moderateAsthma vs. severeAsthma
+  X <- t(x[intersect(rownames(x), latephase_exacer_biomarkers), group != "healthyControls"])
+  Y <- droplevels(group[group != "healthyControls"])
+  result <- mixOmics::plsda(X = X, Y = Y, ncomp=2)
+  cv <- perf(result, validation = "Mfold", folds = 5, nrepeat = 5, auc = TRUE)
+  df2 <- data.frame(value = cv$auc$comp2, 
+             stat = names(cv$auc$comp2),
+             gse = gse,
+             sampletype = unique(y$sampletype),
+             comp = "moderateAsthma_vs_severeAsthma")
+  feat2 <- data.frame(rank = 1:ncol(X))
+  rownames(feat2) <- selectVar(result, comp=2)$name
+  
+  ## feature ranking
+  feat <- cbind(feat1, feat2[rownames(feat1), ])
+  colnames(feat) <- c(paste("healthyControls_vs_moderateAsthma", 
+                           unique(y$sampletype), gse, "comp1", sep="_"),
+                      paste("moderateAsthma_vs_severeAsthma", 
+                           unique(y$sampletype), gse, "comp2", sep="_"))
+  
+  ## perf results
+  df <- rbind(df1, df2)
+  list(feat=feat, df=df)
+}, x = esetList[select_gse], y = phenoDataList[select_gse], gse = select_gse,
+SIMPLIFY = FALSE) %>% 
+  zip_nPure()
+
+fig3c <- rbind(df, do.call(rbind, res$df)) %>% 
+  as.data.frame() %>% 
+  spread(stat, value) %>% 
+  ggplot(aes(x = reorder(gse, -AUC.mean), y = AUC.mean, fill = comp)) +
+  geom_errorbar(aes(ymin = AUC.mean-AUC.sd,
+                    ymax = AUC.mean+AUC.sd), width = 0.5,
+        position=position_dodge(width=1)) +
+    # geom_bar(stat="identity", position = position_dodge(width=1)) +
+  geom_col(position = position_dodge2(width = 0.5)) +
+  geom_hline(yintercept = 0.7, linetype="dashed",
+             col="black") +
+  facet_wrap(~sampletype, scales = "free", ncol = 4) +
+  ylim(c(0,1))+
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  xlab("GEO Series (GSE) id") +
+  ylab("AUC")
+
+```
+
+```{r}
+fig3c <- plot_grid(fig3c, labels = "C", ncol = 1)
+
+ggsave(here::here("results", "validation_of_late_phase_biomarkers_aucs.png"),
+       fig3c, width=10, height=4)
+```
+
+

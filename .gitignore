@@ -47,3 +47,8 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+
+# project folders and files
+.DS_Store
+data/
+docs/

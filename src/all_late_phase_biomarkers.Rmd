@@ -1,0 +1,278 @@
+---
+title: "All late phase biomarkers"
+author: "Amrit Singh"
+date: "2024-12-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(UpSetR)
+library(enrichR)
+library(wordcloud)
+```
+
+## overlap between pre-challenge biomarker panels
+
+```{r}
+ucsc <- c("ABHD5",
+"AHCTF1",
+"ATP8A1",
+"B3GNT5",
+"C9orf78",
+"CARM1",
+"CASP8",
+"CD300LB",
+"CD4",
+"CD8A",
+"CLEC4E",
+"CNTNAP3",
+"DAP",
+"F13A1",
+"FAM8A1",
+"FOS",
+"FUT7",
+"GNLY",
+"HBA2",
+"HLAA",
+"KRT23",
+"LMBRD1",
+"NAPA",
+"NFKBIA",
+"PABPC1",
+"PPP3R1",
+"RGS2",
+"SCARNA5",
+"SF3B1",
+"SH3BGRL3",
+"SULT1A1",
+"TGFBI",
+"ZNF185")
+
+ucsc_isoforms <- c("ATP11A",
+"ATP8A1",
+"CD8A",
+"CLEC4E",
+"CNTNAP3",
+"F13A1",
+"FAM8A1",
+"FPR2",
+"GNLY",
+"HBA2",
+"IL1R2",
+"MME",
+"NAPA",
+"NFKBIA",
+"PTPN18",
+"QKI",
+"RGS2",
+"SCARNA5",
+"SEMA4D",
+"SF3B1",
+"SH3BGRL3",
+"SULT1A1",
+"TGFBI",
+"CNTNAP3",
+"COPB1",
+"GNAS",
+"MAP3K8",
+"PELI1",
+"PLXNC1",
+"PTAR1",
+"SF3B1",
+"TIA1",
+"VCAN",
+"VPS13A",
+"ZNF609")
+  
+ensembl <- c("AHCTF1",
+"ATP8A1",
+"C9orf78",
+"CARM1",
+"CD300LB",
+"CD8A",
+"CHP1",
+"CISH",
+"CLEC4E",
+"CMC1",
+"CNTNAP3",
+"CTDSP2",
+"CTSA",
+"DAP",
+"DESI1",
+"F13A1",
+"FAM8A1",
+"GBE1",
+"GNLY",
+"HBA2",
+"ITSN1",
+"KIAA1551",
+"KRT23",
+"PABPC1",
+"PPP3R1",
+"RALGPS2",
+"RGS2",
+"SCARNA5",
+"SF3B1",
+"SH3BGRL3",
+"SMCHD1", 
+"TGFBI",
+"ZNF185",
+"ZNF281")
+
+
+trinity <- c("CASP8",
+"CECR1",
+"FNIP1",
+"FPR2",
+"LYST",
+"QKI",
+"SETX",
+"SF3B1",
+"TNFRSF10C",
+"KY",
+"VMRC53",
+"LOC254896",
+"FPR1",
+"IFRD1")
+
+panCancer <- readRDS(here::here("results", "panCancer_biomarkers.rds"))
+.list <- list(UCSC = ucsc, UCSC_isoforms = ucsc_isoforms,
+              Ensembl = ensembl, Trinity = trinity, panCancer = panCancer)
+```
+
+## number of gene-transcripts in late phase biomarker panels
+
+```{r}
+p1 <- data.frame(freq = sapply(.list, length),
+           panel = names(.list)) %>% 
+  ggplot(aes(y = reorder(panel, -freq), x = freq)) +
+  geom_bar(stat="identity") +
+  theme_bw() +
+  ylab("Late-phase Biomarker Panels") +
+  xlab("Number of genes")
+ggsave(here::here("results", "n_late_phase_biomarker_panels.png"), p1, height=3, width=3)
+```
+
+## overlap 
+
+```{r}
+p2 <- upset(UpSetR::fromList(.list), nsets=length(.list), keep.order = TRUE)
+
+png(here::here("results", "late_phase_biomarker_panels_overlap.png"), units='in', height = 3, width = 3, res = 300)
+p2
+dev.off()
+```
+
+# Gene set enrichment analysis
+
+```{r}
+latephase_exacer_biomarkers <- unique(unlist(.list))
+length(latephase_exacer_biomarkers)
+saveRDS(latephase_exacer_biomarkers, here::here("results", "latephase_exacer_biomarkers.rds"))
+
+result <- enrichr(latephase_exacer_biomarkers, 
+                  databases = c("WikiPathways_2024_Human", "CellMarker_2024",  "Rummagene_transcription_factors"))
+```
+
+
+## number of significant genesets
+
+```{r}
+dat <- lapply(result, function(i){
+  i$n <- 1:nrow(i)
+  i
+}) %>% 
+  do.call(rbind, .)
+dat$db <- rep(names(result), sapply(result, nrow))
+
+p3 <- dat %>% 
+  ggplot(aes(x = n, y = Adjusted.P.value, color = db)) +
+  geom_line() +
+  facet_wrap(~db, scales = "free", ncol = 1) +
+  scale_x_log10() +
+  theme_bw() +
+  theme(legend.position = "none") +
+  ylab("Adjusted P-value") +
+  xlab("Number of genesets")
+ggsave(here::here("results", "n_genesets.png"), p3, height = 9, width=3)
+```
+
+```{r}
+convert_enrichr_to_links <- function(enrichr_result, fdr_cutoff){
+  result <- lapply(names(enrichr_result), function(db){
+    res <- subset(enrichr_result[[db]], Adjusted.P.value < fdr_cutoff)
+    res_genes <- lapply(res$Genes, function(i) strsplit(i, ";")[[1]])
+    names(res_genes) <- res$Term
+        if(db == "Rummagene_transcription_factors"){
+      df <- data.frame(geneset = rep(res$tf, sapply(res_genes, length)),
+               genes = unlist(res_genes))
+        
+    } else {
+    df <- data.frame(geneset = rep(names(res_genes), sapply(res_genes, length)),
+               genes = unlist(res_genes))
+    }
+    df$db <- db
+    df %>% 
+      group_by(geneset, genes, db) %>% 
+      dplyr::slice(1)
+  }) %>% 
+    do.call(rbind, .)
+}
+```
+
+## word cloud
+
+```{r}
+## add tfs to tf dataframe
+result$Rummagene_transcription_factors$tf <- sapply(strsplit(result$Rummagene_transcription_factors$Term, " "), function(i){
+  i[length(i)]
+})
+
+result$CellMarker_2024 <- result$CellMarker_2024[grep("Blood Human", result$CellMarker_2024$Term), ]
+result$CellMarker_2024$Term <- gsub(" Blood Human", "", result$CellMarker_2024$Term)
+result$CellMarker_2024$Adjusted.P.value <- p.adjust(result$CellMarker_2024$P.value, "BH")
+
+
+enrichr_result <- result
+fdr_cutoff <- 0.01
+res <- convert_enrichr_to_links(enrichr_result = result, fdr_cutoff = fdr_cutoff)
+links <- data.frame(from = res$genes,
+                    to = res$geneset,
+                    db = res$db) %>% 
+  group_by(from, to, db) %>% 
+  slice(1)
+```
+
+## top genesets
+
+```{r}
+p4 <- res %>% 
+  group_by(db, geneset) %>% 
+  summarise(n = n()) %>% 
+  arrange(desc(n)) %>% 
+  dplyr::slice(1:15) %>% 
+  ggplot(aes(y = reorder(geneset, n), x = n, fill = db)) +
+  geom_bar(stat="identity") +
+  facet_wrap(~db, scales = "free", ncol=1) +
+  theme(legend.position = "none") +
+  xlab("Number of gene-transcripts") +
+  ylab("Genesets") +
+  theme_bw()
+ggsave(here::here("results", "genesets.png"), p4, height=9, width=9)
+```
+
+## word cloud
+
+```{r}
+fq <- table(res$genes)
+df <- data.frame(gene = names(fq), freq = as.numeric(fq))
+pal <- brewer.pal(9,"BuGn")
+pal <- pal[-(1:4)]
+set.seed(1234)
+png(here::here("results", "wordcloud.png"))
+wordcloud(df$gene, df$freq, random.order = FALSE, 
+          colors = pal)
+dev.off()
+```

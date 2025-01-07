@@ -1,0 +1,485 @@
+---
+title: "preprocessGEOdatasets"
+author: "Amrit Singh"
+date: "Jan 6, 2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse);
+library(GEOquery);
+library(mixOmics)
+
+library(biomaRt) # https://www.bioconductor.org/packages/devel/bioc/vignettes/biomaRt/inst/doc/biomaRt.html
+ensembl = useMart("ensembl",dataset="hsapiens_gene_ensembl")
+```
+
+#### Function to impute sex for a given dataset
+
+```{r}
+
+impute_sex = function(eset, true_sex=NULL){
+    genes_ychr <- getBM(attributes=c('chromosome_name', 'hgnc_symbol'), 
+      filters = 'hgnc_symbol', 
+      values = rownames(eset), 
+      mart = ensembl) %>% 
+    filter(chromosome_name == "Y")
+    
+    sex_eset <- t(eset[genes_ychr$hgnc_symbol, ])
+    pca <- prcomp(sex_eset, scale. = TRUE, center = TRUE)
+    cluster <- kmeans(pca$x, centers = 2, nstart = 25)$cluster
+    male_cluster <- scale(sex_eset) %>% 
+        as.data.frame() %>% 
+        mutate(cluster = cluster) %>% 
+        gather(gene, value, -cluster) %>%
+        group_by(cluster) %>% 
+        summarise(avg = mean(value)) %>% 
+        filter(avg == max(avg)) %>% 
+        pull(cluster)
+  
+  cluster[cluster == male_cluster] <- "M"
+  cluster[cluster != "M"] <- "F"
+  
+  acc = NA
+  if(!is.null(true_sex)){
+    truth <- factor(true_sex, c("F", "M"))
+    pred <- factor(cluster, c("F", "M"))
+    acc <- sum(diag(table(truth, pred)))/sum(table(truth, pred))
+  }
+  
+  return(list(cluster=cluster, acc=acc))
+}
+
+```
+
+
+# import NanoString dataset
+
+```{r}
+load(here::here("data", "preprocessedData", "panCancerDatasets.RDATA"))
+
+phenoDataList <- list()
+esetList <- list()
+```
+
+# import GEO datasets
+
+## Blood
+
+### GSE19301: Pathways Activated during Human Asthma Exacerbation as Revealed by Gene Expression Patterns in Blood^[[PLOS ONE 2011](http://journals.plos.org/plosone/article?id=10.1371/journal.pone.0021902)]
+
+```{r}
+g <- getGEO("GSE19301")
+names(g)
+e1 <- g[["GSE19301_series_matrix.txt.gz"]]
+
+## assay data
+phenoData <- pData(e1)
+ann <- e1@featureData@data
+exp <- exprs(e1)
+hist(exp)
+exp <- log2(exprs(e1))
+exp[is.na(exp)] <- 0
+sum(is.na(exp)) == 0
+exp[exp < 0] <- 0
+hist(exp)
+dim(phenoData); dim(ann); dim(exp);
+
+## clean phenotypic data
+phenotype <- unlist(lapply(strsplit(as.character(phenoData$title), ";"), function(i) gsub(" Visit Type: ", "", i[3])))  # keep
+table(phenotype)
+## donor
+donor <- gsub("Donor: ", "", unlist(lapply(strsplit(as.character(phenoData$title), ";"), function(i) gsub(" Visit Type: ", ": ", i[1]))))  # keep
+table(phenotype, donor)
+## history of acid reflux
+acidReflux <- unlist(lapply(strsplit(as.character(phenoData$characteristics_ch1), ": "), function(i) i[2]))
+table(phenotype, acidReflux) ## keep
+
+## bactin-gapdh 5' 3' ratio
+hkRatio <- as.numeric(unlist(lapply(strsplit(as.character(phenoData$characteristics_ch1.2), ": "), function(i) i[2])))
+## sample collection date
+sampleCollectionDate <- unlist(lapply(strsplit(as.character(phenoData$characteristics_ch1.4), " "), function(i) i[4]))
+table(phenotype, unlist(lapply(strsplit(sampleCollectionDate, "-"), function(i) i[1]))) ## keep
+year <- unlist(lapply(strsplit(sampleCollectionDate, "-"), function(i) i[1]))
+## relevant respiratory infections
+respiratoryInfections <- unlist(lapply(strsplit(as.character(phenoData$characteristics_ch1.5), ": "), function(i) i[2]))
+table(phenotype, respiratoryInfections) ## keep
+## atopic
+atopicStatus <- unlist(lapply(strsplit(as.character(phenoData$characteristics_ch1.6), ": "), function(i) i[2]))
+table(phenotype, atopicStatus) ## keep
+## bmi
+bmi <- as.numeric(unlist(lapply(strsplit(as.character(phenoData$characteristics_ch1.9), ": "), function(i) i[2])))
+bmi2 <- bmi
+bmi2[!is.na(bmi2)] <- "available"
+table(bmi2, phenotype) ## keep
+# maximum steroid exposure (4=systemic  3=inhaled  2=intranasal  1)
+steroids <- as.numeric(unlist(lapply(strsplit(as.character(phenoData$characteristics_ch1.11), ": "), function(i) i[2])))
+table(steroids, phenotype)  ## keep
+## ratio of monocytes to lymphocytes  whole blood
+mono.lym <- as.numeric(unlist(lapply(strsplit(as.character(phenoData$characteristics_ch1.13), ": "), function(i) i[2]))) ## keep
+## ige level
+igelevel <- as.numeric(unlist(lapply(strsplit(as.character(phenoData$characteristics_ch1.15), ": "), function(i) i[2])))
+sum(!is.na(igelevel))  ## remove   
+## any inhaled cs use  0=no  1=yes
+ics <- as.numeric(unlist(lapply(strsplit(as.character(phenoData$characteristics_ch1.16), ": "), function(i) i[2])))
+table(ics, phenotype)  ## keep
+## any intranasal cs use  0=no  1=yes
+ncs <- as.numeric(unlist(lapply(strsplit(as.character(phenoData$characteristics_ch1.17), ": "), function(i) i[2])))
+table(ncs, phenotype)  ## keep
+## baseline severity  nih guideline
+severity <- unlist(lapply(strsplit(as.character(phenoData$characteristics_ch1.20), ": "), function(i) i[2]))
+table(severity, phenotype)  ## keep
+## any systemic cs use  0=no  1=yes
+scs <- as.numeric(unlist(lapply(strsplit(as.character(phenoData$characteristics_ch1.22), ": "), function(i) i[2])))
+### change 912083903 to NA
+scs[scs == "912083903"] <- NA
+table(scs, phenotype)  ## keep
+## Race
+race <- unlist(lapply(strsplit(as.character(phenoData$characteristics_ch1.24), ": "), function(i) i[2]))
+table(race, phenotype)  ## keep
+## visit number
+visitNumber <- as.numeric(unlist(lapply(strsplit(as.character(phenoData$characteristics_ch1.26), ": "), function(i) i[2])))
+plot(visitNumber ~ factor(phenotype))
+table(visitNumber, phenotype)  ## keep
+## country: AUS country: GBR country: IRL country: ISL country: USA
+country <- unlist(lapply(strsplit(as.character(phenoData$characteristics_ch1.27), ": "), function(i) i[2]))
+table(country, phenotype)  ## keep
+## fev1 predicted
+fev1Pred <- as.numeric(unlist(lapply(strsplit(as.character(phenoData$characteristics_ch1.28), ": "), function(i) i[2])))
+fev1Pred1 <- fev1Pred
+fev1Pred1[!is.na(fev1Pred1)] <- "available"
+table(fev1Pred1, phenotype)  ## keep
+## leukotriene receptor antagonist use  0=no  1=yes
+lra <- as.numeric(unlist(lapply(strsplit(as.character(phenoData$characteristics_ch1.29), ": "), function(i) i[2])))
+table(lra, phenotype)
+
+all(rownames(phenoData) == colnames(exp))
+
+#In these analyses, log2-transformed signal was the response variable,
+#and asthma severity, sex, age category, race, geographical location,
+#visit type, corticosteroid exposure, leukotriene receptor antagonist
+#use, RNA quality and monocyte to lymphocyte ratio were the
+#explanatory variables.
+
+## condense probe set by n dataset to gene symbol by n dataset
+nrow(exp)
+all(rownames(exp) == rownames(ann))
+
+genSym <- as.character(ann$`Gene Symbol`)
+names(genSym) <- rownames(ann)
+genSym <- genSym[!is.na(genSym)]
+
+exp2 <- exp[names(genSym), ] %>% data.frame %>%  mutate(genSym = genSym) %>% 
+  dplyr::group_by(genSym) %>% dplyr::summarise_each(funs(mean))
+exp3 <- as.matrix(exp2[-1, -1])
+rownames(exp3) <- as.character(exp2$genSym)[-1]
+
+sex <- impute_sex(eset = exp3)$cluster
+demo_gse19301 <- data.frame(phenotype, donor, acidReflux, hkRatio, sampleCollectionDate,  year, respiratoryInfections, atopicStatus, bmi, steroids, mono.lym, igelevel, ics, ncs, severity, scs, race, visitNumber, country, fev1Pred, lra, sex)
+rownames(demo_gse19301) <- rownames(phenoData)
+
+
+phenoDataList$GSE19301 <- demo_gse19301 %>% 
+  mutate(GSE = "GSE19301", 
+         sampletype = "blood", 
+         platform = "HG-U133")
+esetList$GSE19301 <- exp3
+
+```
+
+### GSE69683: A Severe Asthma Disease Signature from Gene Expression Profiling of Peripheral Blood from U-BIOPRED Cohorts
+^[[Am J Respir Crit Care Med](https://pubmed.ncbi.nlm.nih.gov/27925796/)]
+
+```{r}
+g <- getGEO("GSE69683")
+names(g)
+e1 <- g[["GSE69683_series_matrix.txt.gz"]]
+
+## assay data
+phenoData <- pData(e1)
+ann <- e1@featureData@data
+exp <- exprs(e1)
+exp[is.na(exp)] <- 0
+sum(is.na(exp)) == 0
+exp[exp < 0] <- 0
+hist(exp)
+dim(phenoData); dim(ann); dim(exp);
+
+phenotype <- phenoData$`cohort:ch1`
+phenotype[phenotype == "Healthy, non-smoking"] <- "healthyControls"
+phenotype[phenotype == "Moderate asthma, non-smoking"] <- "moderateAsthma"
+phenotype[phenotype == "Severe asthma, non-smoking"] <- "severeAsthma"
+phenotype[phenotype == "Severe asthma, smoking"] <- "severeAsthma"
+phenotype <- factor(phenotype, levels = c("healthyControls", "moderateAsthma", "severeAsthma"))
+sex <- phenoData$`gender:ch1`
+sex[sex == "female"] <- "F"
+sex[sex == "male"] <- "M"
+sex <- factor(sex, levels = c("F", "M"))
+race <- phenoData$`race:ch1`
+demo_gse69683 <- data.frame(phenotype, sex, race)
+rownames(demo_gse69683) <- rownames(phenoData)
+
+## condense probe set by n dataset to gene symbol by n dataset
+nrow(exp)
+all(rownames(exp) == rownames(ann))
+
+genSym <- as.character(ann$`Gene Symbol`)
+names(genSym) <- rownames(ann)
+genSym <- genSym[!is.na(genSym)]
+
+exp2 <- exp[names(genSym), ] %>% data.frame %>%  mutate(genSym = genSym) %>% 
+  dplyr::group_by(genSym) %>% dplyr::summarise_each(funs(mean))
+exp3 <- as.matrix(exp2[-1, -1])
+rownames(exp3) <- as.character(exp2$genSym)[-1]
+
+phenoDataList$GSE69683 <- demo_gse69683 %>% 
+  mutate(GSE = "GSE69683", 
+         sampletype = "blood", 
+         platform = "HG-U133")
+esetList$GSE69683 <- exp3
+
+
+## check accuracy of sex variable
+impute_sex(eset = exp3, true_sex=sex)$acc
+
+```
+
+## BALF
+
+Sun Y, Peng I, Webster JD, Suto E et al. Inhibition of the kinase ITK in a mouse model of asthma reduces cell death and fails to inhibit the inflammatory response. Sci Signal 2015 Dec 1;8(405):ra122. PMID: 26628680
+
+```{r}
+g <- getGEO("GSE74986")
+names(g)
+e1 <- g[["GSE74986_series_matrix.txt.gz"]]
+
+## assay data
+phenoData <- pData(e1)
+ann <- e1@featureData@data
+exp <- exprs(e1)
+hist(exp)
+dim(phenoData); dim(ann); dim(exp);
+
+## condense probe set by n dataset to gene symbol by n dataset
+nrow(exp)
+all(rownames(exp) == rownames(ann))
+
+genSym <- as.character(ann$GENE_SYMBOL)
+names(genSym) <- rownames(ann)
+genSym <- genSym[!is.na(genSym)]
+
+exp2 <- exp[names(genSym), ] %>% data.frame %>%  mutate(genSym = genSym) %>% 
+  dplyr::group_by(genSym) %>% dplyr::summarise_each(funs(mean))
+exp3 <- as.matrix(exp2[-1, -1])
+rownames(exp3) <- as.character(exp2$genSym)[-1]
+
+sex <- impute_sex(eset = exp3)$cluster
+sex <- factor(sex, levels = c("F", "M"))
+phenotype <- phenoData$source_name_ch1
+phenotype[phenotype == "HEALTHY"] <- "healthyControls"
+phenotype[phenotype == "MODERATE_ASTHMA"] <- "moderateAsthma"
+phenotype[phenotype == "SEVERE_ASTHMA"] <- "severeAsthma"
+phenotype <- factor(phenotype, levels = c("healthyControls", "moderateAsthma", "severeAsthma"))
+demo_gse74986 <- data.frame(phenotype, sex)
+rownames(demo_gse74986) <- rownames(phenoData)
+
+
+phenoDataList$GSE74986 <- demo_gse74986 %>% 
+  mutate(GSE = "GSE74986", 
+         sampletype = "balf", 
+         platform = "Agilent Whole Human Genome 4×44K")
+esetList$GSE74986 <- exp3
+
+
+```
+
+## GSE147878 - Endobronchial biopsy
+
+```{r}
+
+g <- getGEO("GSE147878")
+names(g)
+e1 <- g[["GSE147878_series_matrix.txt.gz"]]
+
+## assay data
+phenoData <- pData(e1)
+ann <- e1@featureData@data
+exp <- exprs(e1)
+hist(exp)
+dim(phenoData); dim(ann); dim(exp);
+
+## condense probe set by n dataset to gene symbol by n dataset
+nrow(exp)
+all(rownames(exp) == rownames(ann))
+
+genSym <- toupper(as.character(ann$ILMN_Gene))
+names(genSym) <- rownames(ann)
+genSym <- genSym[!is.na(genSym)]
+
+exp2 <- exp[names(genSym), ] %>% data.frame %>%  mutate(genSym = genSym) %>% 
+  dplyr::group_by(genSym) %>% dplyr::summarise_each(funs(mean))
+exp3 <- as.matrix(exp2[-1, -1])
+rownames(exp3) <- as.character(exp2$genSym)[-1]
+
+phenotype <- phenoData$`disease status:ch1`
+phenotype[phenotype == "healthy"] <- "healthyControls"
+phenotype[phenotype == "mild/moderate asthma"] <- "moderateAsthma"
+phenotype[phenotype == "severe asthma"] <- "severeAsthma"
+phenotype <- factor(phenotype, levels = c("healthyControls", "moderateAsthma", "severeAsthma"))
+sex <- phenoData$`gender:ch1`
+sex[sex == "female"] <- "F"
+sex[sex == "male"] <- "M"
+sex <- factor(sex, levels = c("F", "M"))
+age <- phenoData$`age:ch1`
+demo_gse147878 <- data.frame(phenotype=phenotype, sex=sex, age=age)
+rownames(demo_gse147878) <- rownames(phenoData)
+
+
+phenoDataList$GSE147878 <- demo_gse147878 %>% 
+  mutate(GSE = "GSE147878", 
+         sampletype = "airway", 
+         platform = "Illumina HumanHT-12 V4.0 expression beadchip")
+esetList$GSE147878 <- exp3
+
+## check accuracy of sex variable
+true_sex=sex
+true_sex[true_sex == "female"] <- "F"
+true_sex[true_sex == "male"] <- "M"
+impute_sex(eset = exp3, true_sex=true_sex)$acc
+
+
+```
+
+## GSE147880 - Sputum
+
+```{r}
+
+g <- getGEO("GSE147880")
+names(g)
+e1 <- g[["GSE147880_series_matrix.txt.gz"]]
+
+## assay data
+phenoData <- pData(e1)
+ann <- e1@featureData@data
+exp <- exprs(e1)
+hist(exp)
+dim(phenoData); dim(ann); dim(exp);
+
+
+phenotype <- phenoData$`disease status:ch1`
+phenotype[phenotype == "healthy control"] <- "healthyControls"
+phenotype[phenotype == "mild/moderate asthma"] <- "moderateAsthma"
+phenotype[phenotype == "severe asthma"] <- "severeAsthma"
+phenotype <- factor(phenotype, levels = c("healthyControls", "moderateAsthma", "severeAsthma"))
+sex <- phenoData$`gender:ch1`
+sex[sex == "female"] <- "F"
+sex[sex == "male"] <- "M"
+sex <- factor(sex, levels = c("F", "M"))
+age <- phenoData$`age:ch1`
+demo_gse147880 <- data.frame(phenotype=phenotype, sex=sex, age=age)
+rownames(demo_gse147880) <- rownames(phenoData)
+
+## condense probe set by n dataset to gene symbol by n dataset
+nrow(exp)
+all(rownames(exp) == rownames(ann))
+
+genSym <- toupper(as.character(ann$ILMN_Gene))
+names(genSym) <- rownames(ann)
+genSym <- genSym[!is.na(genSym)]
+
+exp2 <- exp[names(genSym), ] %>% data.frame %>%  mutate(genSym = genSym) %>% 
+  dplyr::group_by(genSym) %>% dplyr::summarise_each(funs(mean))
+exp3 <- as.matrix(exp2[-1, -1])
+rownames(exp3) <- as.character(exp2$genSym)[-1]
+
+phenoDataList$GSE147880 <- demo_gse147880 %>% 
+  mutate(GSE = "GSE147880", 
+         sampletype = "airway", 
+         platform = "Illumina HumanHT-12 V4.0 expression beadchip")
+esetList$GSE147880 <- exp3
+
+## check accuracy of sex variable
+true_sex=sex
+true_sex[true_sex == "female"] <- "F"
+true_sex[true_sex == "male"] <- "M"
+impute_sex(eset = exp3, true_sex=true_sex)$acc
+
+
+```
+
+
+## GSE76262 - induced sputum
+
+```{r}
+
+g <- getGEO("GSE76262")
+names(g)
+e1 <- g[["GSE76262_series_matrix.txt.gz"]]
+
+## assay data
+phenoData <- pData(e1)
+ann <- e1@featureData@data
+exp <- exprs(e1)
+hist(exp)
+dim(phenoData); dim(ann); dim(exp);
+
+
+phenotype <- sapply(strsplit(phenoData$title, "_"), function(i) i[[2]])
+phenotype[phenotype == "healthy control"] <- "healthyControls"
+phenotype[phenotype == "moderate"] <- "moderateAsthma"
+phenotype[phenotype == "severe"] <- "severeAsthma"
+phenotype <- factor(phenotype, levels = c("healthyControls", "moderateAsthma", "severeAsthma"))
+sex <- phenoData$`gender:ch1`
+sex[sex == "female"] <- "F"
+sex[sex == "male"] <- "M"
+sex <- factor(sex, levels = c("F", "M"))
+age <- phenoData$`age:ch1`
+ics <- phenoData$`oral corticosteroid use:ch1`
+demo_gse76262 <- data.frame(phenotype=phenotype, sex=sex, age=age,
+                            ics=ics)
+rownames(demo_gse76262) <- rownames(phenoData)
+
+## condense probe set by n dataset to gene symbol by n dataset
+nrow(exp)
+all(rownames(exp) == rownames(ann))
+
+genSym <- toupper(as.character(ann$`Gene Symbol`))
+names(genSym) <- rownames(ann)
+genSym <- genSym[!is.na(genSym)]
+
+exp2 <- exp[names(genSym), ] %>% data.frame %>%  mutate(genSym = genSym) %>% 
+  dplyr::group_by(genSym) %>% dplyr::summarise_each(funs(mean))
+exp3 <- as.matrix(exp2[-1, -1])
+rownames(exp3) <- as.character(exp2$genSym)[-1]
+
+phenoDataList$GSE76262 <- demo_gse76262 %>% 
+  mutate(GSE = "GSE76262", 
+         sampletype = "induced sputum", 
+         platform = "Affymetrix HT HG-U133+ PM Array")
+esetList$GSE76262 <- exp3
+
+## check accuracy of sex variable
+true_sex=sex
+true_sex[true_sex == "female"] <- "F"
+true_sex[true_sex == "male"] <- "M"
+impute_sex(eset = exp3, true_sex=true_sex)$acc
+```
+
+## save results
+
+```{r}
+
+par(mfrow = c(4, 2))
+mapply(function(plot, title){
+  hist(plot, main=unique(paste(title$GSE, title$sampletype, sep="_")))
+}, plot=esetList, title=phenoDataList)
+
+
+save(esetList = esetList, phenoDataList = phenoDataList,
+  file = here::here("data", "preprocessedData", "geodatasets.RDATA"))
+
+
+```
+

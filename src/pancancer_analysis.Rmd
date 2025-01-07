@@ -1,0 +1,234 @@
+---
+title: "panCancer analysis"
+author: "Amrit Singh"
+date: "Jan 6, 2024"
+output: 
+  html_document: 
+    keep_md: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Import nanoString data, demographics and load libraries
+
+```{r}
+## load dataset
+load(here::here("data", "preprocessedData", "panCancerDatasets.RDATA"))
+
+## libraries
+library(devtools);
+library(limma); library(ggrepel) # for volcano plot labels
+library(mixOmics)
+library(gplots) # heatmap.2
+library(igraph) # for networks
+library(nlme) # lme()
+library(cowplot);
+library(tidyverse)
+
+source(here::here("src", "utils.R"))
+```
+
+# Demographics
+
+```{r}
+table(calculatedResponse = demoPre$calculated_Response, givenResponse = demoPre$givenResponse) ## all subjects had no replicates
+table(calculatedResponse = demoPre$calculated_Response, Sex = demoPre$SEX)
+table(calculatedResponse = demoPre$calculated_Response, Allergen = demoPre$Allergen_cleanLabel)
+table(calculatedResponse = demoPre$calculated_Response, Site = demoPre$SITE)
+
+demoPre$BMI <- demoPre$Wt..Kg./(demoPre$HT.cm./100)^2
+demoPre$calculated_Response <- factor(demoPre$calculated_Response, levels = c("ER", "DR"))
+variables  = c("AGE", "BMI", "BLFEV", "EAR", "LAR", "Leukocyte_Counts.x10.9.",
+                "Neu_percent","lym_percent","mono_percent","eos_percent","baso_percent")
+result <- descriptiveStat(demo=demoPre, groups = "calculated_Response", 
+variables)
+as.data.frame(result$meanSD)
+as.data.frame(result$pval)
+
+subset(demoPre[, c(variables, "calculated_Response")], calculated_Response == "DR")
+```
+
+# Principal Component Analysis
+
+```{r, fig.width=8, fig.height=6}
+variables  = c("Leukocyte_Counts.x10.9.","Neu_percent","lym_percent","mono_percent",
+               "eos_percent","baso_percent", "AGE", "BMI", "EAR", "LAR", "SEX", 
+               "Wt..Kg.", "HT.cm.", "BLFEV", "AIS")
+
+p1 <- compVar(demoPre, t(genEset), variables, ncomp = 20)$p + ggtitle("Genes")
+ggsave(here::here("results", "pca_demo_cors.png"), p1)
+```
+
+# Lung Function
+## Spirometry
+
+```{r, fig.width=8, fig.height=5}
+## FEV1 plot
+demo.core.fev1 <- demoPre[, c("BLFEV", "F10L","F20L","F30L",
+                                    "F45L","F60L", "F90L","F120L",
+                                    "F180L","F240L","F300L","F360L","F420L")]
+demo.core.fev1.scale <- 100*scale(t(demo.core.fev1), center=demo.core.fev1$BLFEV, scale=demo.core.fev1$BLFEV)
+
+fev1.list <- list()
+for(i in 1:ncol(demo.core.fev1.scale)){
+  fev1.list[[i]] <- as.matrix(demo.core.fev1.scale[,i])
+}
+fev1.rbind <- do.call(rbind, fev1.list)
+
+fev1.time <- as.data.frame(demo.core.fev1.scale)
+fev1.time.melt <- gather(fev1.time)
+fev1.dat <- data.frame(fev1=as.numeric(fev1.time.melt$value))
+fev1.dat$Time <- rep(round(c(0,10,20,30,45,60,90,120,180,240,300,360,420)/60,2), ncol(demo.core.fev1.scale))
+fev1.dat$Subj <- factor(rep(colnames(demo.core.fev1.scale), each=nrow(demo.core.fev1.scale)))
+res <- as.character(demoPre$calculated_Response)
+res[res == "ER"] <- "Early Responders"
+res[res == "DR"] <- "Dual Responders"
+fev1.dat$Response <- factor(rep(res, each=nrow(demo.core.fev1.scale)), levels=c("Early Responders","Dual Responders"))
+col.subj <- factor(res, levels=c("Early Responders","Dual Responders"))
+fev1.dat$Col <- factor(rep(col.subj, each=nrow(demo.core.fev1.scale)))
+
+p2 <- ggplot(fev1.dat, aes(x = Time, y = fev1, group=Subj, colour=Col)) + geom_line() +
+  stat_smooth(aes(group = 1)) + stat_summary(aes(group = 1),
+                                             geom = "point", fun.y = mean, shape = 17, size = 3) + facet_grid(. ~ Response) +
+  scale_y_continuous(expression('Percent drop in'~ FEV[1])) + #theme_bw() +
+  scale_x_continuous(expression('Time (hours)')) +
+  theme(axis.text.y = element_text(size = 15, hjust = 1)) + theme(axis.text.x = element_text(size = 15, hjust = 0.5))+
+  theme(axis.title.x=element_text(size = 15)) + theme(axis.title.y=element_text(size = 15,angle = 90))+ 
+  theme(plot.background = element_rect()) +   theme_bw() + 
+  theme(strip.background = element_rect(colour = "black", fill = "white",
+                                        size = 1), strip.text.x = element_text(size=8)) +
+        theme(legend.position="none") + 
+  geom_segment(aes(x = -0.08, y = -60, xend = -0.08, yend = -55), arrow = arrow(length = unit(0.3, "cm")), col = "black") +
+  annotate("text", x=1.7, y=-58, label="Blood draw") +
+  scale_color_manual(values=c("#00BFC4", "#F8766D"), name = "Response")
+ggsave(here::here("results", "fev1_plot.png"), p2)
+
+```
+
+## AIS vs. LAR
+
+```{r, fig.width=5, fig.height=5}
+response <- demoPre$calculated_Response
+col <- as.character(response)
+col[col == "ER"] <- "#00BFC4"
+col[col == "DR"] <- "#F8766D"
+par(mar = c(5, 5, 3, 3))
+lar <- demoPre$LAR
+ais <- demoPre$AIS
+ais[is.na(ais)] <- -1
+png(here::here("results", "AIS_LAR.png"))
+plot(lar ~ ais, col = col, 
+     pch = as.numeric(factor(response))+14, axes = FALSE, ylim=c(-55,5), xlim=c(-1,8),
+     xlab = expression("Allergen induced shift (pre PC"[20]~"/post PC"[20]~")"),
+     ylab = expression("Maximum drop in FEV"[1]~"(3h-7h)"))
+box()
+axis(1, at=-1:8, labels=c("NA", paste(0:8)), col.axis="black", las=1)
+axis(2, at=seq(-50, 10, length.out=7), labels=c(paste(seq(-50, 10, length.out=7))), col.axis="black", las=1)
+rect(xleft=-2, ybottom=-10, xright=9, ytop=15, density = 10, angle = 45,
+     col = "#00BFC4")
+rect(xleft=-2, ybottom=-15, xright=2, ytop=-10, density = 10, angle = 45,
+     col = "#00BFC4")
+rect(xleft=-2, ybottom=-60, xright=9, ytop=-15, density = 10, angle = -45,
+     col = "#F8766D")
+rect(xleft=2, ybottom=-15, xright=9, ytop=-10, density = 10, angle = -45,
+     col = "#F8766D")
+text(x = 6, y = 3, labels = "ERs", cex = 3, col = "#00BFC4")
+text(x = 6, y = -51, labels = "DRs", cex = 3, col = "#F8766D")
+abline(h = -15, col = "black", lty = 2)
+abline(v = 2, col = "black", lty = 2)
+dev.off()
+
+```
+
+# Differential gene expression
+
+```{r, fig.width=7, fig.height=7}
+design <- model.matrix(~response)
+fit <- eBayes(lmFit(genEset, design))
+top <- topTable(fit, coef = 2, adjust.method = "BH", n = nrow(fit))
+top$logPval <- -log10(top$P.Value)
+top$Gene <- rownames(top)
+top$Class <- ann[top$Gene, "Gene.Class"]
+
+thres <- top$logPval[top$adj.P.Val == min(top$adj.P.Val)]
+deGen <- ggplot(top, aes(x = logFC, y = logPval, color = Class)) + geom_point(size = 2) +
+  geom_hline(aes(yintercept = thres[length(thres)]), lty = 2, col = "red") +
+  geom_vline(aes(xintercept = 0), lty = 2, color = "gray") +
+  geom_text_repel(data=filter(top, logPval >= thres[length(thres)]), aes(label=Gene)) + customTheme(sizeStripFont = 10, xAngle = 0, hjust = 0.5, vjust = 0.5, xSize = 15, ySize = 15, xAxisSize = 15, yAxisSize = 15) +
+  scale_x_continuous(expression("log"[2]~"Fold-change"), limits = c(-0.8, 0.5)) +
+  scale_y_continuous(expression("-log"[10]~"P-value")) +
+  annotate("text", x = -0.5, y = 2.2, label = "BH-FDR=35.2%", col = "red") +
+  ggtitle("Differential gene expression") + theme(legend.position = "right")
+deGen
+```
+
+# Biomarker Analysis
+
+```{r}
+nrow(ann); dim(genEset);
+table(ann$Gene.Class)
+
+X <- t(genEset)
+Y <- as.character(demoPre$calculated_Response)
+Y[Y == "ER"] <- "earlyResponder"
+Y[Y == "DR"] <- "dualResponder"
+Y = factor(Y, levels = c("earlyResponder", "dualResponder"))
+names(Y) <- rownames(X)
+
+res <- mixOmics::splsda(X, Y, keep=c(25, 10))
+cv <- perf(res, validation = "Mfold", folds = 5, nrepeat = 20,
+           auc = TRUE)
+panCancer <- unique(c(selectVar(res, comp=1)$name, selectVar(res, comp=2)$name))
+saveRDS(panCancer, here::here("results", "panCancer_biomarkers.rds"))
+
+df0 <- data.frame(value = as.numeric(cv$auc$comp2),
+             stat = names(cv$auc$comp2),
+             gse = "current study",
+             sampletype = "blood",
+             comp = "ER vs. DR")
+df0
+```
+
+## Sample plot
+
+```{r}
+result.mrna <- splsda(X = X, Y, keepX = rep(15, 2), ncomp = 2)
+
+p3 <- result.mrna$variates$X %>% 
+  as.data.frame() %>% 
+  mutate(group = Y) %>% 
+  ggplot(aes(x = comp1, y = comp2, color = group)) +
+  stat_ellipse(aes(group = group)) +
+  theme_classic() +
+  geom_hline(yintercept = 0, linetype="dashed", color="grey") +
+  geom_vline(xintercept = 0, linetype="dashed", color="grey") +
+  geom_point() +
+  xlab("Component 1") +
+  ylab("Component 2") +
+  theme(legend.position = "top")
+ggsave(here::here("results", "pancancer_comp_plot.png"), p3)
+```
+
+## plot var
+
+```{r}
+p4 <- rbind(selectVar(result.mrna, comp=1)$value,
+      selectVar(result.mrna, comp=2)$value) %>% 
+  as.data.frame() %>% 
+  mutate(gene = rownames(.)) %>% 
+  mutate(value = abs(value.var)) %>% 
+  ggplot(aes(y = reorder(gene, value), x = value)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  xlab("Variable importance") +
+  ylab("Gene-transcript")
+ggsave(here::here("results", "pancancer_var_imp.png"), p4)
+```
+
+```{r}
+p5 <- cowplot::plot_grid(plot_grid(p2, p3, labels = c("A", "B"), ncol = 1), p4, labels=c("", "C"))
+ggsave(here::here("results", "Figure 1.png"), p5, width = 8, height = 8)
+```
+
