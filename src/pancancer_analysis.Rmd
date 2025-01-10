@@ -57,8 +57,8 @@ variables  = c("Leukocyte_Counts.x10.9.","Neu_percent","lym_percent","mono_perce
                "eos_percent","baso_percent", "AGE", "BMI", "EAR", "LAR", "SEX", 
                "Wt..Kg.", "HT.cm.", "BLFEV", "AIS")
 
-p1 <- compVar(demoPre, t(genEset), variables, ncomp = 20)$p + ggtitle("Genes")
-ggsave(here::here("results", "pca_demo_cors.png"), p1)
+pca_demo_cors <- compVar(demoPre, t(genEset), variables, ncomp = 20)$p + ggtitle("Genes")
+ggsave(here::here("results", "pca_demo_cors.png"), pca_demo_cors)
 ```
 
 # Lung Function
@@ -89,7 +89,7 @@ fev1.dat$Response <- factor(rep(res, each=nrow(demo.core.fev1.scale)), levels=c(
 col.subj <- factor(res, levels=c("Early Responders","Dual Responders"))
 fev1.dat$Col <- factor(rep(col.subj, each=nrow(demo.core.fev1.scale)))
 
-p2 <- ggplot(fev1.dat, aes(x = Time, y = fev1, group=Subj, colour=Col)) + geom_line() +
+fev1_curves <- ggplot(fev1.dat, aes(x = Time, y = fev1, group=Subj, colour=Col)) + geom_line() +
   stat_smooth(aes(group = 1)) + stat_summary(aes(group = 1),
                                              geom = "point", fun.y = mean, shape = 17, size = 3) + facet_grid(. ~ Response) +
   scale_y_continuous(expression('Percent drop in'~ FEV[1])) + #theme_bw() +
@@ -101,9 +101,9 @@ p2 <- ggplot(fev1.dat, aes(x = Time, y = fev1, group=Subj, colour=Col)) + geom_l
                                         size = 1), strip.text.x = element_text(size=8)) +
         theme(legend.position="none") + 
   geom_segment(aes(x = -0.08, y = -60, xend = -0.08, yend = -55), arrow = arrow(length = unit(0.3, "cm")), col = "black") +
-  annotate("text", x=1.7, y=-58, label="Blood draw") +
+  annotate("text", x=2, y=-58, label="Blood draw") +
   scale_color_manual(values=c("#00BFC4", "#F8766D"), name = "Response")
-ggsave(here::here("results", "fev1_plot.png"), p2)
+ggsave(here::here("results", "fev1_plot.png"), fev1_curves)
 
 ```
 
@@ -177,14 +177,51 @@ Y[Y == "DR"] <- "dualResponder"
 Y = factor(Y, levels = c("earlyResponder", "dualResponder"))
 names(Y) <- rownames(X)
 
-res <- mixOmics::splsda(X, Y, keep=c(25, 10))
-cv <- perf(res, validation = "Mfold", folds = 5, nrepeat = 20,
-           auc = TRUE)
-panCancer <- unique(c(selectVar(res, comp=1)$name, selectVar(res, comp=2)$name))
+# keep_list <- c(5, 10, 15, 20, 25, 30)
+# tune_splsda_auc_mean <- tune_splsda_auc_sd <- matrix(NA, nrow=length(keep_list), ncol=length(keep_list))
+# rownames(tune_splsda_auc_mean) <- colnames(tune_splsda_auc_mean) <- rownames(tune_splsda_auc_sd) <- colnames(tune_splsda_auc_sd) <- keep_list
+# for(row in 1:length(keep_list)){
+#   for(col in 1:length(keep_list)){
+#     keepX <- c(keep_list[row], keep_list[col])
+#     res <- mixOmics::splsda(X, Y, keepX = keepX, ncomp = length(keepX))
+#     cv <- perf(res, validation = "Mfold", folds = 5, nrepeat = 20,
+#            auc = TRUE)
+#     tune_splsda_auc_mean[row, col] <- as.numeric(cv$auc$comp2)[1]
+#     tune_splsda_auc_sd[row, col] <- as.numeric(cv$auc$comp2)[2]
+#   }
+# }
+# saveRDS(tune_splsda_auc_mean, here::here("results", "tune_splsda_auc_mean.rds"))
+# saveRDS(tune_splsda_auc_sd, here::here("results", "tune_splsda_auc_sd.rds"))
+tune_splsda_auc_mean <- readRDS(here::here("results", "tune_splsda_auc_mean.rds"))
+tune_splsda_auc_sd <- readRDS(here::here("results", "tune_splsda_auc_sd.rds"))
+
+selected_keepx_auc <- paste0(100*signif(tune_splsda_auc_mean["25", "15"], 2),
+       "±", 
+       100*signif(tune_splsda_auc_sd["25", "15"], 1), 
+       "%")
+
+tune_splsda <- tune_splsda_auc_mean %>% 
+  as.data.frame() %>% 
+  mutate(comp1 = rownames(.)) %>% 
+  gather(comp2, auc, -comp1) %>% 
+  mutate(comp1 = as.numeric(comp1), comp2 = as.numeric(comp2)) %>% 
+  ggplot(aes(x = comp1, y = comp2, z = auc)) + 
+  geom_contour_filled(bins=5) +
+  theme_bw() +
+  xlab("Number of variables for component 1") +
+  ylab("Number of variables \n for component 2") +
+  geom_text(x = 25, y = 15, 
+            label = selected_keepx_auc, size = 5) +
+  theme(legend.position = "bottom") +
+  guides(fill=guide_legend(ncol =3))
+
+result.mrna <- mixOmics::splsda(X, Y, keep=c(25, 15))
+panCancer <- unique(c(selectVar(result.mrna, comp=1)$name, 
+                      selectVar(result.mrna, comp=2)$name))
 saveRDS(panCancer, here::here("results", "panCancer_biomarkers.rds"))
 
-df0 <- data.frame(value = as.numeric(cv$auc$comp2),
-             stat = names(cv$auc$comp2),
+df0 <- data.frame(value = tune_splsda_auc_mean["25", "15"],
+             stat = c("Mean", "SD"),
              gse = "current study",
              sampletype = "blood",
              comp = "ER vs. DR")
@@ -194,9 +231,7 @@ df0
 ## Sample plot
 
 ```{r}
-result.mrna <- splsda(X = X, Y, keepX = rep(15, 2), ncomp = 2)
-
-p3 <- result.mrna$variates$X %>% 
+comp_plot <- result.mrna$variates$X %>% 
   as.data.frame() %>% 
   mutate(group = Y) %>% 
   ggplot(aes(x = comp1, y = comp2, color = group)) +
@@ -207,14 +242,14 @@ p3 <- result.mrna$variates$X %>%
   geom_point() +
   xlab("Component 1") +
   ylab("Component 2") +
-  theme(legend.position = "top")
-ggsave(here::here("results", "pancancer_comp_plot.png"), p3)
+  theme(legend.position = "top", legend.)
+ggsave(here::here("results", "pancancer_comp_plot.png"), comp_plot)
 ```
 
 ## plot var
 
 ```{r}
-p4 <- rbind(selectVar(result.mrna, comp=1)$value,
+loading_plot <- rbind(selectVar(result.mrna, comp=1)$value,
       selectVar(result.mrna, comp=2)$value) %>% 
   as.data.frame() %>% 
   mutate(gene = rownames(.)) %>% 
@@ -224,11 +259,11 @@ p4 <- rbind(selectVar(result.mrna, comp=1)$value,
   theme_bw() +
   xlab("Variable importance") +
   ylab("Gene-transcript")
-ggsave(here::here("results", "pancancer_var_imp.png"), p4)
+ggsave(here::here("results", "pancancer_var_imp.png"), loading_plot)
 ```
 
 ```{r}
-p5 <- cowplot::plot_grid(plot_grid(p2, p3, labels = c("A", "B"), ncol = 1), p4, labels=c("", "C"))
-ggsave(here::here("results", "Figure 1.png"), p5, width = 8, height = 8)
+p5 <- cowplot::plot_grid(plot_grid(fev1_curves, tune_splsda, comp_plot, labels = c("A", "B", "C"), ncol = 1), loading_plot, labels=c("", "D"))
+ggsave(here::here("results", "Figure 1.png"), p5, width = 8, height = 10)
 ```
 
