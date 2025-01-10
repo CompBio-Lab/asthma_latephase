@@ -242,7 +242,7 @@ comp_plot <- result.mrna$variates$X %>%
   geom_point() +
   xlab("Component 1") +
   ylab("Component 2") +
-  theme(legend.position = "top", legend.)
+  theme(legend.position = "top")
 ggsave(here::here("results", "pancancer_comp_plot.png"), comp_plot)
 ```
 
