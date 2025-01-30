@@ -152,7 +152,7 @@ test_biomarkers = function(eset,pheno,biomarkers){
   design <- model.matrix(~group+sex+0)
   colnames(design) <- c("control", "mod", "sev", "sex")
   lmfit <- lmFit(eset[intersect(rownames(eset), biomarkers), ], design)
-  cont <- makeContrasts(sev-mod, mod-control, levels = design)
+  cont <- makeContrasts(sev-control, mod-control, levels = design)
   lmfit.cont <- contrasts.fit(lmfit, cont)
   lmfit.cont.ebayes <- eBayes(lmfit.cont)
   top <- lapply(colnames(cont), function(contrast){
@@ -166,7 +166,7 @@ test_biomarkers = function(eset,pheno,biomarkers){
       do.call(rbind, .)
 }
 
-select_gse <- c("GSE69683","GSE74986","GSE147878","GSE147880","GSE76262")
+select_gse <- c("GSE69683","GSE74986","GSE147878","GSE147880","GSE76262", "GSE161245")
 result <- mapply(function(x, y, z, tis){
   result = test_biomarkers(eset = x,
                   pheno = y,
@@ -213,11 +213,28 @@ p2 <- df2 %>%
 ## Figure 3
 
 ```{r}
-fig3ab <- plot_grid(p1, p2, labels = c("A", "B"), rel_widths = c(1, 3))
+fig3ab <- plot_grid(p1, p2, labels = c("A", "B"), rel_widths = c(1, 4))
 
 ggsave(here::here("results", "validation_of_late_phase_biomarkers_volcanoplots.png"),
-       fig3ab, height = 5, width = 11)
+       fig3ab, height = 5, width = 14)
 ```
+
+## overlap between the signficant genes
+
+```{r}
+df3 <- df2 %>% 
+  filter(adj.P.Val < 0.1) %>% 
+  filter(contrast == "sev - control")
+
+library(UpSetR)
+sigfeat <- split(df3$feature, df3$tissue_gse)
+
+Reduce(intersect, sigfeat)
+
+upset(fromList(sigfeat))
+```
+
+
 
 # splsda analysis 
 
@@ -266,17 +283,17 @@ res <- mapply(function(x, y, gse){
   feat1 <- data.frame(rank = 1:ncol(X))
   rownames(feat1) <- selectVar(result, comp=1)$name
   
-    ## moderateAsthma vs. severeAsthma
+    ## healthyControls vs. severeAsthma
   set.seed(1232)
-  X <- t(x[intersect(rownames(x), latephase_exacer_biomarkers), group != "healthyControls"])
-  Y <- droplevels(group[group != "healthyControls"])
+  X <- t(x[intersect(rownames(x), latephase_exacer_biomarkers), group != "moderateAsthma"])
+  Y <- droplevels(group[group != "moderateAsthma"])
   result <- mixOmics::plsda(X = X, Y = Y, ncomp=2)
   cv <- perf(result, validation = "Mfold", folds = 5, nrepeat = 20, auc = TRUE)
   df2 <- data.frame(value = cv$auc$comp2, 
              stat = names(cv$auc$comp2),
              gse = gse,
              sampletype = unique(y$sampletype),
-             comp = "moderateAsthma_vs_severeAsthma")
+             comp = "healthyControls_vs_severeAsthma")
   feat2 <- data.frame(rank = 1:ncol(X))
   rownames(feat2) <- selectVar(result, comp=2)$name
   
@@ -284,7 +301,7 @@ res <- mapply(function(x, y, gse){
   feat <- cbind(feat1, feat2[rownames(feat1), ])
   colnames(feat) <- c(paste("healthyControls_vs_moderateAsthma", 
                            unique(y$sampletype), gse, "comp1", sep="_"),
-                      paste("moderateAsthma_vs_severeAsthma", 
+                      paste("healthyControls_vs_severeAsthma", 
                            unique(y$sampletype), gse, "comp2", sep="_"))
   
   ## perf results

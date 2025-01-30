@@ -13,7 +13,6 @@ library(GEOquery);
 library(mixOmics)
 
 library(biomaRt) # https://www.bioconductor.org/packages/devel/bioc/vignettes/biomaRt/inst/doc/biomaRt.html
-ensembl = useMart("ensembl",dataset="hsapiens_gene_ensembl")
 ```
 
 #### Function to impute sex for a given dataset
@@ -21,6 +20,7 @@ ensembl = useMart("ensembl",dataset="hsapiens_gene_ensembl")
 ```{r}
 
 impute_sex = function(eset, true_sex=NULL){
+    ensembl = useMart("ensembl",dataset="hsapiens_gene_ensembl")
     genes_ychr <- getBM(attributes=c('chromosome_name', 'hgnc_symbol'), 
       filters = 'hgnc_symbol', 
       values = rownames(eset), 
@@ -396,7 +396,7 @@ rownames(exp3) <- as.character(exp2$genSym)[-1]
 
 phenoDataList$GSE147880 <- demo_gse147880 %>% 
   mutate(GSE = "GSE147880", 
-         sampletype = "airway", 
+         sampletype = "induced sputum", 
          platform = "Illumina HumanHT-12 V4.0 expression beadchip")
 esetList$GSE147880 <- exp3
 
@@ -466,6 +466,90 @@ true_sex[true_sex == "female"] <- "F"
 true_sex[true_sex == "male"] <- "M"
 impute_sex(eset = exp3, true_sex=true_sex)$acc
 ```
+
+## GSE161245 - broncial epithelial cells
+
+```{r}
+
+g <- getGEO("GSE161245")
+names(g)
+e1 <- g[["GSE161245_series_matrix.txt.gz"]]
+
+## assay data
+phenoData <- pData(e1)
+ann <- e1@featureData@data
+exp <- exprs(e1)
+dim(phenoData); dim(ann); dim(exp); ## manually download the data from GEO
+phenoData <- phenoData[phenoData$`donor:ch1` != "Mild asthma patients", ]
+
+## import count data files
+countfiles <- list.files(here::here("data", "rawdata", "GEO", "GSE161245_RAW"), full.names = TRUE)
+df <- lapply(countfiles, function(i){
+  dat <- read.delim(i, header = FALSE)
+  df <- dat[, "V2", drop = FALSE]
+  rownames(df) <- dat$V1
+  df
+}) %>% 
+  do.call(cbind, .)
+colnames(df) <- paste0("GSM", sapply(countfiles, function(i){
+  sub(".*\\/GSM(.*?)\\_.*", "\\1",i)
+}))
+df <- df[, rownames(phenoData)]
+
+## map ensembl ids to gene symbols
+ensembl <- useEnsembl(biomart = "genes")
+datasets <- listDatasets(ensembl)
+ensembl.con <- useMart(biomart="ensembl", dataset = "hsapiens_gene_ensembl")
+attr <- listAttributes(ensembl.con)
+filters <- listFilters(ensembl.con)
+ensembl_map <- getBM(attributes = c("ensembl_gene_id", "external_gene_name"),
+      filters = "ensembl_gene_id",
+      values = rownames(df),
+      mart = ensembl.con)
+df2 <- df %>% 
+  mutate(ensembl_gene_id = rownames(.)) %>% 
+  inner_join(ensembl_map, by="ensembl_gene_id")
+
+exp2 <- df2 %>% 
+  dplyr::select(-ensembl_gene_id) %>% 
+  dplyr::group_by(external_gene_name) %>% 
+  dplyr::summarise_each(funs(mean))
+exp3 <- as.matrix(exp2[-1, -1])
+rownames(exp3) <- as.character(exp2$external_gene_name)[-1]
+exp3 <- exp3[apply(exp3, 1, sd) > 0, ]
+
+## normalize data
+libsizeNorm = function(x){
+  lib.size <- colSums(x)
+  t(log2(t(x + 0.5)/(lib.size + 1) * 1e+06))
+}
+exp3 <- libsizeNorm(exp3)
+
+## create phenodata
+phenotype <- phenoData$`donor:ch1`
+phenotype[phenotype == "Healthy controls"] <- "healthyControls"
+phenotype[phenotype == "Moderate asthma patients"] <- "moderateAsthma"
+phenotype[phenotype == "Severe asthma patients"] <- "severeAsthma"
+phenotype <- factor(phenotype, levels = c("healthyControls", "moderateAsthma", "severeAsthma"))
+
+sex <- impute_sex(eset = exp3)$cluster
+sex <- factor(sex, levels = c("F", "M"))
+demo_gse161245 <- data.frame(phenotype, sex)
+rownames(demo_gse161245) <- rownames(phenoData)
+
+
+phenoDataList$GSE161245 <- demo_gse161245 %>% 
+  mutate(GSE = "GSE161245", 
+         sampletype = "airway", 
+         platform = "RNA-sequencing")
+esetList$GSE161245 <- exp3
+
+
+
+
+
+```
+
 
 ## save results
 
