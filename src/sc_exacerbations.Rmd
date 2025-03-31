@@ -1,0 +1,537 @@
+---
+title: "human exacerbation data"
+author: "Amrit Singh"
+date: "2025-03-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(anndata)
+library(Seurat)
+library(tidyverse)
+library(SingleCellExperiment)
+library(muscat)
+library(scater)
+library(limma)
+library(ComplexHeatmap)
+library(circlize)
+
+options(future.globals.maxSize = 8000 * 1024^2)
+latephase_exacer_biomarkers <- readRDS(here::here("results", "latephase_exacer_biomarkers.rds"))
+sc_diffexp = function(counts, metadata, cell_ann_col = "cluster"){
+  # create singleCellExperiment object 
+  sce <- SingleCellExperiment(
+    assays = list(counts = counts[, rownames(metadata)]),
+    colData = metadata
+  )
+  
+  # remove undetected genes
+  sce <- sce[rowSums(counts(sce) > 0) > 0, ]
+  dim(sce)
+
+  # calculate per-cell quality control (QC) metrics
+  qc <- perCellQCMetrics(sce)
+
+  # remove cells with few or many detected genes
+  ol <- isOutlier(metric = qc$detected, nmads = 2, log = TRUE)
+  sce <- sce[, !ol]
+  dim(sce)
+
+  # remove lowly expressed genes
+  sce <- sce[rowSums(counts(sce) > 1) >= 10, ]
+  dim(sce)
+
+  # compute sum-factors & normalize
+  sce <- computeLibraryFactors(sce)
+  sce <- logNormCounts(sce)
+  
+  (sce <- prepSCE(sce, 
+                  kid = cell_ann_col, # subpopulation assignments
+                  gid = "condition",  # group IDs (ctrl/stim)
+                  sid = "sample_id", # sample IDs (ctrl/stim.1234)
+                  drop = FALSE))  # drop all other colData columns
+  
+  # store cluster + sample IDs as well as number of clusters and samples 
+  nk <- length(kids <- levels(sce$cluster_id))
+  ns <- length(sids <- levels(sce$sample_id))
+  names(kids) <- kids; names(sids) <- sids
+  
+  # nb. of cells per cluster-sample
+  df <- t(table(sce$cluster_id, sce$sample_id))
+  df
+  
+  # aggregation of single-cell to pseudo-bulk data 
+  pb <- aggregateData(sce,
+                      assay = "logcounts", fun = "mean",
+                      by = c("cluster_id", "sample_id"))
+  
+  # construct design & contrast matrix
+  ei <- metadata(sce)$experiment_info
+  ei$group_id <- relevel(ei$group_id, ref = "Bln")
+  mm <- model.matrix(~ 0 + ei$group_id)
+  dimnames(mm) <- list(ei$sample_id, levels(ei$group_id))
+  contrast <- makeContrasts(Ag-Bln,Dil-Bln,Ag-Dil, levels = mm)
+  
+  # run DS analysis
+  res <- pbDS(pb, design = mm, contrast = contrast, method="limma-trend", 
+              min_cells = 3)
+  
+  # access results table
+  tbl <- lapply(res$table, function(i){
+    do.call(rbind, i)
+  }) %>% 
+    do.call(rbind, .)
+  
+  tbl2 <- tbl %>% 
+    filter(gene %in% latephase_exacer_biomarkers) %>% 
+    group_by(contrast, cluster_id) %>% 
+    mutate(p_adj.loc = p.adjust(p_val, "BH")) %>% 
+    arrange(p_val) %>% 
+    mutate(n = 1:n())
+  tbl2
+}
+
+result_drug <- df %>% 
+  group_by(cell_type_orig) %>% 
+  nest() %>% 
+  mutate(result = purrr::map(data, ~{
+    block <- .$donor_id
+    design <- model.matrix(~sm_name, data = .)
+    eset <- t(.[, -c(1:5)])
+    v <- voom(eset, design, plot=FALSE)
+    dupcor <- duplicateCorrelation(v, design, block = block)
+    vobj <- voom(eset, design, plot = FALSE, block = block, correlation = dupcor$consensus)
+    # fit <- lmFit(eset, design)
+    # fit <- eBayes(fit, trend = TRUE)
+    fit <- lmFit(vobj, design, block = block, correlation = dupcor$consensus)
+    top_all <- lapply(colnames(design)[2:144], function(i){
+      top <- topTable(fit, coef = i, adjust.method = "BH", n = nrow(fit)) %>% 
+        mutate(gene = rownames(.)) %>% 
+        filter(gene %in% latephase_exacer_biomarkers) %>% 
+        mutate(adj.P.Val = p.adjust(P.Value, "BH"))
+      top$sm_name <- gsub("sm_name", "", i)
+      top
+    }) %>% 
+      do.call(rbind, .)
+    top_all
+  }))
+
+sc_diffexp2 = function(counts, metadata, cell_ann_col = "cluster"){
+  counts %>% 
+    mutate(cell_type_orig = metadat[, cell_ann_col]) %>% 
+      group_by(cell_type_orig) %>% 
+  nest() %>% 
+  mutate(result = purrr::map(data, ~{
+    block <- .$donor_id
+    design <- model.matrix(~sm_name, data = .)
+    eset <- t(.[, -c(1:5)])
+    v <- voom(eset, design, plot=FALSE)
+    dupcor <- duplicateCorrelation(v, design, block = block)
+    vobj <- voom(eset, design, plot = FALSE, block = block, correlation = dupcor$consensus)
+    # fit <- lmFit(eset, design)
+    # fit <- eBayes(fit, trend = TRUE)
+    fit <- lmFit(vobj, design, block = block, correlation = dupcor$consensus)
+    top_all <- lapply(colnames(design)[2:144], function(i){
+      top <- topTable(fit, coef = i, adjust.method = "BH", n = nrow(fit)) %>% 
+        mutate(gene = rownames(.)) %>% 
+        filter(gene %in% latephase_exacer_biomarkers) %>% 
+        mutate(adj.P.Val = p.adjust(P.Value, "BH"))
+      top$sm_name <- gsub("sm_name", "", i)
+      top
+    }) %>% 
+      do.call(rbind, .)
+    top_all
+  }))
+}
+```
+
+## import single cell data
+
+```{r}
+data <- read_h5ad(here::here("data", "preprocessedData",  "GSE193816", "GSE193816_all_cells_data.h5ad"))
+data <- CreateSeuratObject(counts = t(as.matrix(data$X)), 
+                           meta.data = data$obs)
+
+## mnp
+mnp <- read_h5ad(here::here("data","preprocessedData",  "GSE193816", "GSE193816_mnp_data.h5ad"))
+mnp <- CreateSeuratObject(counts = t(as.matrix(mnp$X)), 
+                           meta.data = mnp$obs,
+                           min.features = 500, 
+                           min.cells = 30)
+
+## t cells
+tcell <- read_h5ad(here::here("data","preprocessedData",  "GSE193816", "GSE193816_t_cell_data.h5ad"))
+tcell <- CreateSeuratObject(counts = t(as.matrix(tcell$X)), 
+                          meta.data = tcell$obs,
+                          min.features = 500, 
+                          min.cells = 30)
+```
+
+## quality metrics
+
+### All cells
+
+```{r}
+VlnPlot(data, features = c("nFeature_RNA", "nCount_RNA", 
+                           "percent_mito"), ncol = 5)
+```
+
+### MNP cells
+
+```{r}
+VlnPlot(mnp, features = c("nFeature_RNA", "nCount_RNA", 
+                           "percent_mito"), ncol = 5)
+```
+
+### T cells
+
+```{r}
+VlnPlot(tcell, features = c("nFeature_RNA", "nCount_RNA", 
+                           "percent_mito"), ncol = 5)
+```
+
+## Dimension reduction plots
+
+### All cells
+
+```{r}
+data <- SCTransform(data) %>% 
+  RunPCA() %>% 
+  RunUMAP(dims = 1:50, reduction.name = 'umap.rna', 
+          reduction.key = 'rnaUMAP_')
+Idents(data) <- data@meta.data$cluster
+
+DimPlot(data, reduction = "umap.rna", label = TRUE, 
+                   label.size = 2.5, repel = TRUE, group.by = "cluster") + 
+  ggtitle("RNA - all cells")
+
+
+res <- Seurat::FindAllMarkers(data, only.pos = TRUE)
+cell_markers <- res %>% 
+  group_by(cluster) %>% 
+  dplyr::slice(1:10)
+cellmarkers <- split(cell_markers$gene, cell_markers$cluster)
+saveRDS(cellmarkers, here::here("results", "cellmarkers_GSE193816.rds"))
+```
+
+### MNP cells
+
+```{r}
+mnp <- SCTransform(mnp) %>% 
+  RunPCA() %>% 
+  RunUMAP(dims = 1:50, reduction.name = 'umap.rna', 
+          reduction.key = 'rnaUMAP_')
+
+DimPlot(mnp, reduction = "umap.rna", label = TRUE, 
+                   label.size = 2.5, repel = TRUE, group.by = "annotation") + 
+  ggtitle("RNA - MNP cells")
+```
+
+### T cells
+
+```{r}
+tcell <- SCTransform(tcell) %>% 
+  RunPCA() %>% 
+  RunUMAP(dims = 1:50, reduction.name = 'umap.rna', 
+          reduction.key = 'rnaUMAP_')
+
+DimPlot(tcell, reduction = "umap.rna", label = TRUE, 
+                   label.size = 2.5, repel = TRUE, group.by = "annotation") + 
+  ggtitle("RNA - T cells")
+```
+
+## Cell-type proportions
+
+### All cells
+
+```{r}
+data@meta.data %>% 
+  dplyr::select(id, group, condition, cluster) %>%
+  dplyr::group_by(id, group, condition, cluster) %>% 
+  mutate(n = n()) %>% 
+  mutate(condition = factor(as.character(condition), 
+                            levels = c("Bln", "Dil", "Ag"))) %>% 
+  ggplot(aes(y = cluster, x = n, color = condition)) +
+  geom_boxplot() +
+  facet_grid(~group) +
+  theme_bw()
+```
+
+### MNP cells
+
+```{r}
+mnp@meta.data %>% 
+  dplyr::select(id, group, condition, annotation) %>%
+  dplyr::group_by(id, group, condition, annotation) %>% 
+  mutate(n = n()) %>% 
+  mutate(condition = factor(as.character(condition), 
+                            levels = c("Bln", "Dil", "Ag"))) %>% 
+  ggplot(aes(y = annotation, x = n, color = condition)) +
+  geom_boxplot() +
+  facet_grid(~group) +
+  theme_bw()
+```
+
+### T cells
+
+```{r}
+tcell@meta.data %>% 
+  dplyr::select(id, group, condition, annotation) %>%
+  dplyr::group_by(id, group, condition, annotation) %>% 
+  mutate(n = n()) %>% 
+  mutate(condition = factor(as.character(condition), 
+                            levels = c("Bln", "Dil", "Ag"))) %>% 
+  ggplot(aes(y = annotation, x = n, color = condition)) +
+  geom_boxplot() +
+  facet_grid(~group) +
+  theme_bw()
+```
+
+## Differential expression analysis
+
+### All cells
+
+```{r}
+sct_counts <- GetAssayData(data, assay = "SCT", layer = "counts")
+metadata_aa <- data@meta.data %>% 
+  dplyr::filter(group == "AA") %>% 
+  mutate(sample_id = paste(id, condition, sep="_"))
+all_aa = sc_diffexp(sct_counts, metadata_aa, cell_ann_col = "cluster")
+all_aa$condition <- "AA"
+all_aa$cc <- "All cells"
+metadata_ac <- data@meta.data %>% 
+  dplyr::filter(group == "AC") %>% 
+  mutate(sample_id = paste(id, condition, sep="_"))
+all_ac = sc_diffexp(sct_counts, metadata_ac, cell_ann_col = "cluster")
+all_ac$condition <- "AC"
+all_ac$cc <- "All cells"
+```
+
+### MNP cells
+
+```{r}
+sct_counts <- GetAssayData(mnp, assay = "SCT", layer = "counts")
+metadata_aa <- mnp@meta.data %>% 
+  dplyr::filter(group == "AA") %>% 
+  mutate(sample_id = paste(id, condition, sep="_"))
+mnp_aa = sc_diffexp(sct_counts, metadata_aa, cell_ann_col = "annotation")
+mnp_aa$condition <- "AA"
+mnp_aa$cc <- "MNP cells"
+metadata_ac <- mnp@meta.data %>% 
+  dplyr::filter(group == "AC") %>% 
+  mutate(sample_id = paste(id, condition, sep="_"))
+mnp_ac = sc_diffexp(sct_counts, metadata_ac, cell_ann_col = "annotation")
+mnp_ac$condition <- "AC"
+mnp_ac$cc <- "MNP cells"
+```
+
+### T cells
+
+```{r}
+sct_counts <- GetAssayData(tcell, assay = "SCT", layer = "counts")
+metadata_aa <- tcell@meta.data %>% 
+  dplyr::filter(group == "AA") %>% 
+  mutate(sample_id = paste(id, condition, sep="_"))
+tcell_aa = sc_diffexp(sct_counts, metadata_aa, cell_ann_col = "annotation")
+tcell_aa$condition <- "AA"
+tcell_aa$cc <- "T cells"
+metadata_ac <- tcell@meta.data %>% 
+  dplyr::filter(group == "AC") %>% 
+  mutate(sample_id = paste(id, condition, sep="_"))
+tcell_ac = sc_diffexp(sct_counts, metadata_ac, cell_ann_col = "annotation")
+tcell_ac$condition <- "AC"
+tcell_ac$cc <- "T cells"
+```
+
+```{r}
+
+diffexp <- rbind(all_aa, all_ac, mnp_aa, mnp_ac, tcell_ac, tcell_aa)
+
+logfc = diffexp %>% 
+  filter(contrast == "Ag - Bln", condition == "AA") %>% 
+  dplyr::select(gene, cluster_id, logFC, contrast, cc, condition) %>% 
+  spread(gene, logFC)
+logfc2 <- as.matrix(logfc[, -c(1:4)])
+logfc2[is.na(logfc2)] <- 0
+rownames(logfc2) <- logfc$cluster_id
+
+cctype <- logfc$cc
+cctype[logfc$cc == "All cells"] <- logfc$cluster_id[logfc$cc == "All cells"]
+cctype[cctype == "CD4 T cells"] <- "T cells"
+cctype[cctype == "CD8 T cells"] <- "T cells"
+cctype[cctype == "NK cells"] <- "T cells"
+cctype[cctype == "MNP"] <- "MNP cells"
+
+fdr = diffexp %>% 
+  filter(contrast == "Ag - Bln", condition == "AA") %>% 
+  dplyr::select(gene, cluster_id, p_adj.loc, contrast, cc, condition) %>% 
+  spread(gene, p_adj.loc)
+fdr2 <- fdr[, -c(1:4)]
+fdr2[is.na(fdr2)] <- 1
+
+col_fun = colorRamp2(c(min(logfc2), 0, max(logfc2)), c("green", "white", "red"))
+row_ha <- rowAnnotation(cells=cctype, col = list(
+  cells = c("B cells"="#999999", "Epithelial cells"="#009E73", 
+            "Mast cells"="#F0E442", "MNP cells"="#D55E00", "T cells"="#56B4E9")
+))
+Heatmap(logfc2, right_annotation = row_ha, col = col_fun,
+        border = TRUE, name="logFC",
+    cell_fun = function(j, i, x, y, width, height, fill) {
+        if(fdr2[i, j] < 0.1)
+            grid.text("*", x, y, gp = gpar(fontsize = 10))
+})
+
+```
+
+### All cells
+
+```{r}
+
+diffexp <- rbind(all_aa)
+
+logfc = diffexp %>% 
+  filter(contrast == "Ag - Bln", condition == "AA", cc == "All cells") %>% 
+  dplyr::select(gene, cluster_id, logFC, contrast, cc, condition) %>% 
+  spread(gene, logFC)
+logfc2 <- as.matrix(logfc[, -c(1:4)])
+logfc2[is.na(logfc2)] <- 0
+rownames(logfc2) <- logfc$cluster_id
+
+cctype <- logfc$cc
+cctype[logfc$cc == "All cells"] <- logfc$cluster_id[logfc$cc == "All cells"]
+cctype[cctype == "CD4 T cells"] <- "T cells"
+cctype[cctype == "CD8 T cells"] <- "T cells"
+cctype[cctype == "NK cells"] <- "T cells"
+cctype[cctype == "MNP"] <- "MNP cells"
+
+fdr = diffexp %>% 
+  filter(contrast == "Ag - Bln", condition == "AA", cc == "All cells") %>% 
+  dplyr::select(gene, cluster_id, p_adj.loc, contrast, cc, condition) %>% 
+  spread(gene, p_adj.loc)
+fdr2 <- fdr[, -c(1:4)]
+fdr2[is.na(fdr2)] <- 1
+
+col_fun = colorRamp2(c(min(logfc2), 0, max(logfc2)), c("green", "white", "red"))
+row_ha <- rowAnnotation(cells=cctype, col = list(
+  cells = c("B cells"="#999999", "Epithelial cells"="#009E73", 
+            "Mast cells"="#F0E442", "MNP cells"="#D55E00", "T cells"="#56B4E9")
+))
+Heatmap(logfc2, right_annotation = row_ha, col = col_fun,
+        border = TRUE, name="logFC",
+    cell_fun = function(j, i, x, y, width, height, fill) {
+        if(fdr2[i, j] < 0.1)
+            grid.text("*", x, y, gp = gpar(fontsize = 10))
+})
+
+
+lar_sc_exacer <- all_aa %>% 
+  mutate(stat = -log10(p_val)*logFC) %>% 
+  filter(p_adj.loc < .1) %>% 
+  filter(contrast == "Ag - Bln") %>% 
+  ungroup() %>% 
+  dplyr::select(gene, cluster_id, logFC)
+saveRDS(lar_sc_exacer, here::here("results", "lar_sc_exacer.rds"))
+saveRDS(logfc2, here::here("results", "lar_sc_exacer_logfc.rds"))
+saveRDS(filter(all_aa,contrast == "Ag - Bln"), here::here("results", "lar_sc_exacer_toptable.rds"))
+
+result <- all_aa %>% 
+  filter(contrast == "Ag - Bln", condition == "AA") %>% 
+  filter(p_adj.loc < 0.2)
+
+larbiomarkers <- split(result$gene, result$cluster_id)
+
+df <- lapply(dhub_list, function(i){
+  sapply(larbiomarkers, function(j){length(intersect(i, j))})
+}) %>% 
+  do.call(rbind, .)
+df <- df[rowSums(df) > 0, ]
+
+sapply(larbiomarkers, function(j){intersect(dhub_list$`TC-ASK-10`, j)})
+
+```
+
+### MNP cells
+
+```{r}
+
+diffexp <- rbind(all_aa, all_ac, mnp_aa, mnp_ac, tcell_ac, tcell_aa)
+
+logfc = diffexp %>% 
+  filter(contrast == "Ag - Bln", condition == "AA", cc == "MNP cells") %>% 
+  dplyr::select(gene, cluster_id, logFC, contrast, cc, condition) %>% 
+  spread(gene, logFC)
+logfc2 <- as.matrix(logfc[, -c(1:4)])
+logfc2[is.na(logfc2)] <- 0
+rownames(logfc2) <- logfc$cluster_id
+
+cctype <- logfc$cc
+cctype[logfc$cc == "All cells"] <- logfc$cluster_id[logfc$cc == "All cells"]
+cctype[cctype == "CD4 T cells"] <- "T cells"
+cctype[cctype == "CD8 T cells"] <- "T cells"
+cctype[cctype == "NK cells"] <- "T cells"
+cctype[cctype == "MNP"] <- "MNP cells"
+
+fdr = diffexp %>% 
+  filter(contrast == "Ag - Bln", condition == "AA", cc == "MNP cells") %>% 
+  dplyr::select(gene, cluster_id, p_adj.loc, contrast, cc, condition) %>% 
+  spread(gene, p_adj.loc)
+fdr2 <- fdr[, -c(1:4)]
+fdr2[is.na(fdr2)] <- 1
+
+col_fun = colorRamp2(c(min(logfc2), 0, max(logfc2)), c("green", "white", "red"))
+row_ha <- rowAnnotation(cells=cctype, col = list(
+  cells = c("B cells"="#999999", "Epithelial cells"="#009E73", 
+            "Mast cells"="#F0E442", "MNP cells"="#D55E00", "T cells"="#56B4E9")
+))
+Heatmap(logfc2, right_annotation = row_ha, col = col_fun,
+        border = TRUE, name="logFC",
+    cell_fun = function(j, i, x, y, width, height, fill) {
+        if(fdr2[i, j] < 0.2)
+            grid.text("*", x, y, gp = gpar(fontsize = 10))
+})
+
+```
+
+### T cells
+
+```{r}
+
+diffexp <- rbind(all_aa, all_ac, mnp_aa, mnp_ac, tcell_ac, tcell_aa)
+
+logfc = diffexp %>% 
+  filter(contrast == "Ag - Bln", condition == "AA", cc == "T cells") %>% 
+  dplyr::select(gene, cluster_id, logFC, contrast, cc, condition) %>% 
+  spread(gene, logFC)
+logfc2 <- as.matrix(logfc[, -c(1:4)])
+logfc2[is.na(logfc2)] <- 0
+rownames(logfc2) <- logfc$cluster_id
+
+cctype <- logfc$cc
+cctype[logfc$cc == "All cells"] <- logfc$cluster_id[logfc$cc == "All cells"]
+cctype[cctype == "CD4 T cells"] <- "T cells"
+cctype[cctype == "CD8 T cells"] <- "T cells"
+cctype[cctype == "NK cells"] <- "T cells"
+cctype[cctype == "MNP"] <- "MNP cells"
+
+fdr = diffexp %>% 
+  filter(contrast == "Ag - Bln", condition == "AA", cc == "T cells") %>% 
+  dplyr::select(gene, cluster_id, p_adj.loc, contrast, cc, condition) %>% 
+  spread(gene, p_adj.loc)
+fdr2 <- fdr[, -c(1:4)]
+fdr2[is.na(fdr2)] <- 1
+
+col_fun = colorRamp2(c(min(logfc2), 0, max(logfc2)), c("green", "white", "red"))
+row_ha <- rowAnnotation(cells=cctype, col = list(
+  cells = c("B cells"="#999999", "Epithelial cells"="#009E73", 
+            "Mast cells"="#F0E442", "MNP cells"="#D55E00", "T cells"="#56B4E9")
+))
+Heatmap(logfc2, right_annotation = row_ha, col = col_fun,
+        border = TRUE, name="logFC",
+    cell_fun = function(j, i, x, y, width, height, fill) {
+        if(fdr2[i, j] < 0.1)
+            grid.text("*", x, y, gp = gpar(fontsize = 10))
+})
+
+```

@@ -11,6 +11,7 @@ knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse);
 library(GEOquery);
 library(mixOmics)
+library(sva)
 
 library(biomaRt) # https://www.bioconductor.org/packages/devel/bioc/vignettes/biomaRt/inst/doc/biomaRt.html
 ```
@@ -544,26 +545,55 @@ phenoDataList$GSE161245 <- demo_gse161245 %>%
          platform = "RNA-sequencing")
 esetList$GSE161245 <- exp3
 
+```
 
+## combine airway datasets
 
+- GSE147878+GSE161245
 
+```{r}
+pheno = rbind(phenoDataList$GSE147878[, colnames(phenoDataList$GSE161245)], phenoDataList$GSE161245)
+com_genes <- intersect(rownames(esetList$GSE147878), rownames(esetList$GSE161245))
+edata = cbind(esetList$GSE147878[com_genes, ], esetList$GSE161245[com_genes, ])
+batch = rep(c("GSE147878", "GSE161245"), c(nrow(phenoDataList$GSE147878), nrow(phenoDataList$GSE161245)))
+mod = model.matrix(~phenotype, data=pheno)
+# parametric adjustment
+combat_edata1 = ComBat(dat=edata, batch=batch, mod=NULL, par.prior=TRUE, prior.plots=TRUE)
 
+phenoDataList$`GSE147878+GSE161245` <- pheno
+esetList$`GSE147878+GSE161245` <- combat_edata1
 ```
 
 
-## save results
+## combine induced sputum datasets
+
+- GSE76262 + GSE147880
+
+```{r}
+pheno = rbind(phenoDataList$GSE76262[, colnames(phenoDataList$GSE147880)], phenoDataList$GSE147880)
+com_genes <- intersect(rownames(esetList$GSE76262), rownames(esetList$GSE147880))
+edata = cbind(esetList$GSE76262[com_genes, ], esetList$GSE147880[com_genes, ])
+batch = rep(c("GSE76262", "GSE147880"), c(nrow(phenoDataList$GSE76262), nrow(phenoDataList$GSE147880)))
+mod = model.matrix(~phenotype, data=pheno)
+# parametric adjustment
+combat_edata1 = ComBat(dat=edata, batch=batch, mod=NULL, par.prior=TRUE, prior.plots=TRUE)
+
+phenoDataList$`GSE76262+GSE147880` <- pheno
+esetList$`GSE76262+GSE147880` <- combat_edata1
+```
+
+```{r}
+save(esetList = esetList, phenoDataList = phenoDataList,
+  file = here::here("data", "preprocessedData", "geodatasets.RDATA"))
+```
+
 
 ```{r}
 
-par(mfrow = c(4, 2))
+par(mfrow = c(3, 3))
 mapply(function(plot, title){
   hist(plot, main=unique(paste(title$GSE, title$sampletype, sep="_")))
 }, plot=esetList, title=phenoDataList)
-
-
-save(esetList = esetList, phenoDataList = phenoDataList,
-  file = here::here("data", "preprocessedData", "geodatasets.RDATA"))
-
 
 ```
 

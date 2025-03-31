@@ -11,6 +11,7 @@ knitr::opts_chunk$set(echo = TRUE)
 library(UpSetR)
 library(enrichR)
 library(wordcloud)
+library(tidyverse)
 ```
 
 ## overlap between pre-challenge biomarker panels
@@ -140,6 +141,7 @@ trinity <- c("CASP8",
 panCancer <- readRDS(here::here("results", "panCancer_biomarkers.rds"))
 .list <- list(UCSC = ucsc, UCSC_isoforms = ucsc_isoforms,
               Ensembl = ensembl, Trinity = trinity, panCancer = panCancer)
+saveRDS(.list, here::here("results", "latephase_biomarkers.rds"))
 write.csv(data.frame(biomarkers = unique(unlist(.list))), here::here("results", "latephase_biomarkers.csv"))
 ```
 
@@ -152,7 +154,7 @@ p1 <- data.frame(freq = sapply(.list, length),
   geom_bar(stat="identity") +
   theme_bw() +
   ylab("Late-phase Biomarker Panels") +
-  xlab("Number of genes")
+  xlab("Number of gene-transcripts")
 ggsave(here::here("results", "n_late_phase_biomarker_panels.png"), p1, height=3, width=3)
 ```
 
@@ -175,6 +177,11 @@ saveRDS(latephase_exacer_biomarkers, here::here("results", "latephase_exacer_bio
 
 result <- enrichr(latephase_exacer_biomarkers, 
                   databases = c("WikiPathways_2024_Human", "CellMarker_2024",  "Rummagene_transcription_factors"))
+
+fdr_cutoff <- 0.01
+sapply(result, function(i){
+  nrow(subset(i, Adjusted.P.value < fdr_cutoff))
+})
 ```
 
 
@@ -237,7 +244,6 @@ result$CellMarker_2024$Adjusted.P.value <- p.adjust(result$CellMarker_2024$P.val
 
 
 enrichr_result <- result
-fdr_cutoff <- 0.01
 res <- convert_enrichr_to_links(enrichr_result = result, fdr_cutoff = fdr_cutoff)
 links <- data.frame(from = res$genes,
                     to = res$geneset,
@@ -253,15 +259,16 @@ p4 <- res %>%
   group_by(db, geneset) %>% 
   summarise(n = n()) %>% 
   arrange(desc(n)) %>% 
-  dplyr::slice(1:15) %>% 
+  dplyr::slice(1:10) %>% 
   ggplot(aes(y = reorder(geneset, n), x = n, fill = db)) +
   geom_bar(stat="identity") +
   facet_wrap(~db, scales = "free", ncol=1) +
   theme(legend.position = "none") +
   xlab("Number of gene-transcripts") +
   ylab("Genesets") +
-  theme_bw()
-ggsave(here::here("results", "genesets.png"), p4, height=9, width=9)
+  theme_bw() +
+  theme(legend.position = "none")
+ggsave(here::here("results", "genesets.png"), p4, height=8, width=7)
 ```
 
 ## word cloud

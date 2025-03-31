@@ -57,8 +57,8 @@ variables  = c("Leukocyte_Counts.x10.9.","Neu_percent","lym_percent","mono_perce
                "eos_percent","baso_percent", "AGE", "BMI", "EAR", "LAR", "SEX", 
                "Wt..Kg.", "HT.cm.", "BLFEV", "AIS")
 
-pca_demo_cors <- compVar(demoPre, t(genEset), variables, ncomp = 20)$p + ggtitle("Genes")
-ggsave(here::here("results", "pca_demo_cors.png"), pca_demo_cors)
+pca_demo_cors <- compVar(demoPre, t(genEset), variables, ncomp = 10)$p + ggtitle("Genes")
+ggsave(here::here("results", "pca_demo_cors.png"), pca_demo_cors, height=5)
 ```
 
 # Lung Function
@@ -103,14 +103,15 @@ fev1_curves <- ggplot(fev1.dat, aes(x = Time, y = fev1, group=Subj, colour=Col))
   geom_segment(aes(x = -0.08, y = -60, xend = -0.08, yend = -55), arrow = arrow(length = unit(0.3, "cm")), col = "black") +
   annotate("text", x=2, y=-58, label="Blood draw") +
   scale_color_manual(values=c("#00BFC4", "#F8766D"), name = "Response")
-ggsave(here::here("results", "fev1_plot.png"), fev1_curves)
+ggsave(here::here("results", "fev1_plot.png"), fev1_curves,
+       width=7, height=4)
 
 ```
 
 ## AIS vs. LAR
 
 ```{r, fig.width=5, fig.height=5}
-response <- demoPre$calculated_Response
+response <- factor(demoPre$calculated_Response, levels = c("ER", "DR"))
 col <- as.character(response)
 col[col == "ER"] <- "#00BFC4"
 col[col == "DR"] <- "#F8766D"
@@ -144,24 +145,27 @@ dev.off()
 
 # Differential gene expression
 
-```{r, fig.width=7, fig.height=7}
-design <- model.matrix(~response)
+```{r}
+design <- model.matrix(~response+factor(as.character(demoPre$SEX)))
 fit <- eBayes(lmFit(genEset, design))
 top <- topTable(fit, coef = 2, adjust.method = "BH", n = nrow(fit))
 top$logPval <- -log10(top$P.Value)
 top$Gene <- rownames(top)
 top$Class <- ann[top$Gene, "Gene.Class"]
 
-thres <- top$logPval[top$adj.P.Val == min(top$adj.P.Val)]
+fdr=0.35
+thres <- top$logPval[top$adj.P.Val < fdr]
 deGen <- ggplot(top, aes(x = logFC, y = logPval, color = Class)) + geom_point(size = 2) +
   geom_hline(aes(yintercept = thres[length(thres)]), lty = 2, col = "red") +
   geom_vline(aes(xintercept = 0), lty = 2, color = "gray") +
-  geom_text_repel(data=filter(top, logPval >= thres[length(thres)]), aes(label=Gene)) + customTheme(sizeStripFont = 10, xAngle = 0, hjust = 0.5, vjust = 0.5, xSize = 15, ySize = 15, xAxisSize = 15, yAxisSize = 15) +
-  scale_x_continuous(expression("log"[2]~"Fold-change"), limits = c(-0.8, 0.5)) +
+  geom_text_repel(data=subset(top, adj.P.Val < fdr), aes(label=Gene)) + customTheme(sizeStripFont = 10, xAngle = 0, hjust = 0.5, vjust = 0.5, xSize = 15, ySize = 15, xAxisSize = 15, yAxisSize = 15) +
+  scale_x_continuous(expression("log"[2]~"Fold-change")) +
   scale_y_continuous(expression("-log"[10]~"P-value")) +
-  annotate("text", x = -0.5, y = 2.2, label = "BH-FDR=35.2%", col = "red") +
-  ggtitle("Differential gene expression") + theme(legend.position = "right")
+  annotate("text", x = -0.5, y = 2, label = paste0("BH-FDR=", 100*signif(fdr, 2), "%"), col = "red") +
+  ggtitle("Differential gene expression") + 
+  theme(legend.position = "right")
 deGen
+
 ```
 
 # Biomarker Analysis
@@ -214,6 +218,8 @@ tune_splsda <- tune_splsda_auc_mean %>%
             label = selected_keepx_auc, size = 5) +
   theme(legend.position = "bottom") +
   guides(fill=guide_legend(ncol =3))
+ggsave(here::here("results", "tune_splsda.png"), tune_splsda,
+       height = 5, width = 5)
 
 result.mrna <- mixOmics::splsda(X, Y, keep=c(25, 15))
 panCancer <- unique(c(selectVar(result.mrna, comp=1)$name, 
@@ -227,6 +233,22 @@ df0 <- data.frame(value = tune_splsda_auc_mean["25", "15"],
              comp = "ER vs. DR")
 df0
 ```
+
+## plot lar-biomarkers that are also degs
+
+```{r}
+plotvars <- intersect(top$Gene[top$adj.P.Val < 0.35], panCancer)
+
+t(genEset[plotvars, ]) %>% 
+  as.data.frame() %>% 
+  mutate(response = response) %>% 
+  gather(gene, exp, -response) %>% 
+  ggplot(aes(y = reorder(gene, -exp), x = exp, color = response)) +
+  geom_boxplot()
+
+```
+
+
 
 ## Sample plot
 
@@ -243,7 +265,7 @@ comp_plot <- result.mrna$variates$X %>%
   xlab("Component 1") +
   ylab("Component 2") +
   theme(legend.position = "top")
-ggsave(here::here("results", "pancancer_comp_plot.png"), comp_plot)
+ggsave(here::here("results", "pancancer_comp_plot.png"), comp_plot, height = 5, width = 5)
 ```
 
 ## plot var
@@ -259,7 +281,7 @@ loading_plot <- rbind(selectVar(result.mrna, comp=1)$value,
   theme_bw() +
   xlab("Variable importance") +
   ylab("Gene-transcript")
-ggsave(here::here("results", "pancancer_var_imp.png"), loading_plot)
+ggsave(here::here("results", "pancancer_var_imp.png"), loading_plot, width = 4)
 ```
 
 ```{r}

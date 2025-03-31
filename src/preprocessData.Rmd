@@ -93,7 +93,7 @@ demoPre <- demoPre0[sampleMap, ]
   * binding density > 2: significant numbers of codes ignored, affects quantification and linearity of the assay
   * *Binding Density QC (nSolver default)*: Flag lanes when binding density is outside of 0.005-2.25 range
 
-```{r positiveControls, fig.width = 10, fig.height = 6, fig.fullwidth = TRUE, fig.cap = "FOV ratio and Binding density.", warning=FALSE, cache=TRUE}
+```{r positiveControls, fig.fullwidth = TRUE, fig.cap = "FOV ratio and Binding density.", warning=FALSE, cache=TRUE}
 qc <- data %>% mutate(FOVratio = FovCounted_Lane_Attributes/FovCount_Lane_Attributes) %>% 
         dplyr::select(FOVratio, BindingDensity = BindingDensity_Lane_Attributes, Sample, Set, ID_Lane_Attributes) %>%
         gather(QCVar, QCmetrics, -c(Sample, Set, ID_Lane_Attributes)) %>% group_by(Sample, QCVar, Set) %>% 
@@ -106,7 +106,10 @@ qc %>% ungroup %>% dplyr::group_by(QCVar) %>%
 
 hline.data <- data.frame(yint = c(0.75, 0.05, 2.25),
                          QCVar = c("FOVratio", rep("BindingDensity", 2)))
-ggplot(data = qc, aes(x = Sample_Lane, y = QCmetrics)) + geom_point() + facet_grid(QCVar~Set, scale = "free") + geom_hline(data = hline.data, aes(yintercept = yint), lty = 2, col = "red") + customTheme(sizeStripFont=15, xAngle=90, hjust = 1, vjust = 0.5, xSize=10, ySize=15, xAxisSize=15, yAxisSize=15)
+ggplot(data = qc, aes(x = Sample_Lane, y = QCmetrics)) + geom_point() + 
+  facet_grid(QCVar~Set, scale = "free") + 
+  geom_hline(data = hline.data, aes(yintercept = yint), lty = 2, col = "red") + 
+  customTheme(sizeStripFont=15, xAngle=90, hjust = 1, vjust = 0.5, xSize=10, ySize=15, xAxisSize=15, yAxisSize=15) + ylab("Value")
 ```
 
 > <span style="color:#009E73">all samples pass Imaging QC and Binding Density QC.</span> 
@@ -119,7 +122,7 @@ ggplot(data = qc, aes(x = Sample_Lane, y = QCmetrics)) + geom_point() + facet_gr
   * For each sample, there are six positive controls (POS_A-POS_F) corresponding to six different concentrations in the 30 ul hybridzation: 128fM, 32fM, 8fM, 2fM, 0.5fM, and 0.125fM.
   * *Positive Control Linearity QC*: Flag lanes when Positive Control $R^2$ value is less than 0.9
 
-```{r internalControls, fig.width = 10, fig.height = 2, fig.fullwidth = TRUE, fig.cap = "Positive Control Linearity QC.", warning=FALSE, cache=TRUE}
+```{r internalControls,  fig.fullwidth = TRUE, fig.cap = "Positive Control Linearity QC.", warning=FALSE, cache=TRUE}
 posConc <- c(128, 32, 8, 2, 0.5, 0.125)
 names(posConc) <- paste0(paste("POS", LETTERS[1:6], sep = "_"), paste0("(", posConc, ")"))
 posDat <- data %>% filter(CodeClass == "Positive_Code_Summary") %>% 
@@ -139,7 +142,16 @@ all(mods$r2 > 0.99)
 posDat$Sample_Lane <- factor(posDat$Sample_Lane, 
                              levels = unique(posDat$Sample_Lane))
 
-ggplot(posDat, aes(x = posConc, y = Count)) + geom_point() + facet_grid(Set~ID_Lane_Attributes) + scale_x_log10() + scale_y_log10() + stat_smooth(method = "lm") + geom_text(aes(x, y, label = paste0("R^2 ==", R2), size = 1), data = r.squared, parse = TRUE) + theme(legend.position = "none") + xlab("Concentration (fM)") + ggtitle("Positive Controls") + customTheme(sizeStripFont=10, xAngle=0, hjust=0.5, vjust=1, xSize=10, ySize=10, xAxisSize=10, yAxisSize=10)
+ggplot(posDat, aes(x = posConc, y = Count)) + geom_point() + 
+  facet_grid(ID_Lane_Attributes~Set) + 
+  scale_x_log10() + scale_y_log10() + 
+  stat_smooth(method = "lm") + 
+  geom_text(aes(x, y, label = paste0("R^2 ==", R2), size = 0.1), 
+            data = r.squared, parse = TRUE) + 
+  theme(legend.position = "none") + 
+  xlab("Concentration (fM)") + 
+  ggtitle("Positive Controls") + 
+  customTheme(sizeStripFont=10, xAngle=0, hjust=0.5, vjust=1, xSize=10, ySize=10, xAxisSize=10, yAxisSize=10)
 
 ```
 
@@ -206,6 +218,18 @@ colnames(Y) <- rownames(demo)[as.character(demo$EorV_number) %in% colnames(Y)]
 colnames(Y) <- paste(colnames(Y), as.character(demo[colnames(Y), "AIC_YMD"]), sep=".")
 colnames(Y) <- gsub("-", ".", unlist(lapply(strsplit(colnames(Y), "_"), function(i) i[2])))
 
+a = expDat
+a[a==0] <- 1
+a <- log2(a)
+b = cor(t(a))
+replicates <- samples[rownames(b)]
+rownames(b) <- colnames(b) <- NULL
+replicates[replicates == "L_ST_026"] <- "replicate"
+replicates[replicates != "replicate"] <- "non-replicate"
+row_ha <- rowAnnotation(replicates = replicates, col=list(replicates = c("replicate"="#E69F00", "non-replicate"="#999999")))
+col_ha <- columnAnnotation(replicates = replicates, col=list(replicates = c("replicate"="#E69F00", "non-replicate"="#999999")))
+Heatmap(b, right_annotation = row_ha, top_annotation = col_ha, name = "correlation")
+
 ## from affy
 mva.pairs(Y)
 reps <- normalize.loess(Y)
@@ -227,6 +251,19 @@ avg <- (Y[, "Pre.2010.03.09"] + Y[, "Pre.2010.03.24"])/2
 plot(diff ~ avg)
 lines(lowess(diff ~ avg), col = "blue", lwd = 3)
 abline(h = 0, lty = 2, col = "red")
+
+## put histograms on the diagonal
+panel.cor <- function(x, y, digits = 2, prefix = "", cex.cor, ...){
+    par(usr = c(0, 1, 0, 1))
+    r <- abs(cor(x, y))
+    txt <- format(c(r, 0.123456789), digits = digits)[1]
+    txt <- paste0(prefix, txt)
+    if(missing(cex.cor)) cex.cor <- 0.8/strwidth(txt)
+    text(0.5, 0.5, txt, cex = cex.cor * r)
+}
+pairs(Y, lower.panel = panel.smooth, upper.panel = panel.cor,
+      gap=0, row1attop=FALSE)
+
 ```
 
 ## 3c. Principal Component Analysis using endogenous genes only LST26 (14, 17)
@@ -234,13 +271,23 @@ abline(h = 0, lty = 2, col = "red")
 ```{r, fig.width=7, fig.height=10}
 group <- samples[rownames(expDat)]
 group[group != "L_ST_026"] <- "other samples"
-
-pcaDat <- prcomp(expDat, scale. = TRUE)
+batch <- rep(c("Set 1", "Set 2", "Set 3"), each = 12)
+names(batch) <- paste0("E", 1:36)
+pcaDat <- prcomp(expDat, scale. = TRUE, center = TRUE)
 ## color replicates
 ggbiplot(pcaDat, obs.scale = 1, var.scale = 1, 
-         group = group,
-         ellipse = F, circle = F,
-         var.axes = FALSE, labels = rownames(expDat)) + theme_bw()
+         group = batch,
+         ellipse = T, circle = F,
+         var.axes = FALSE, labels = rownames(expDat)) + 
+  theme_bw()
+
+pcaDat <- prcomp(a, scale. = TRUE, center = TRUE)
+## color replicates
+ggbiplot(pcaDat, obs.scale = 1, var.scale = 1, 
+         group = batch,
+         ellipse = T, circle = F,
+         var.axes = FALSE, labels = rownames(expDat)) + 
+  theme_bw()
 ```
 
 ## 3d. Filtering of low abundant features
@@ -342,7 +389,7 @@ do.call(cbind, cvList) %>% as.data.frame %>% gather(hkComb, cv) %>%
 
 ```
 
-# 4) Differential Expression Analysis: ERvsDR after total sum normalization (since this normalized had the lowest mean cv compared to the hk normalizations
+# log2 transform total Norm data
 
 ```{r, , message=TRUE}
 genEset0 <- totalNorm %>% filter(CodeClass == "Endogenous_Code_Summary") %>% dplyr::select(Sample.x, Name, totalNorm) %>% 
@@ -355,13 +402,7 @@ demoPre <- demoPre[colnames(genEset), ]
 all(demoPre$EorV_number == colnames(genEset))
 table(demoPre$calculated_Response, demoPre$givenResponse)
 
-## differential expression analysis
-design <- model.matrix(~factor(demoPre$calculated_Response, levels = c("ER", "DR")))
-fit <- eBayes(lmFit(genEset, design, method = "ls"))
-top.total <- topTable(fit, coef = 2, adjust.method = "BH", n = nrow(fit))
-length(top.total$logFC[top.total$P.Value < 0.05])
-plot(-log10(top.total$P.Value) ~ top.total$logFC)
-abline(h = -log10(0.05), lty = 2, col = 2)
+
 
 ```
 

@@ -51,3 +51,6 @@ rsconnect/
 # project folders and files
 .DS_Store
 data/
+**.zip
+adata/
+doc/old/
